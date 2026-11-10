@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Layers, Search } from 'lucide-react';
+import {
+  captureBrowserBookmarks,
+  createDefaultBookmarkStore,
+  loadBookmarkStore,
+  subscribeBookmarkStoreChanges,
+} from '../shared/bookmarks';
 import { createSnapshot } from '../shared/snapshots';
 import {
   createDefaultStore,
@@ -7,6 +13,7 @@ import {
   mergeImportedGroups,
   moveTabInStore,
   mutateStore,
+  prependGroup,
   removeGroupFromStore,
   removeTabFromGroup,
   reorderGroupsInStore,
@@ -22,16 +29,36 @@ import {
 } from '../shared/syncState';
 import { restoreSingleTab, restoreTabGroup } from '../shared/tabService';
 import { applyTheme, getNextTheme, subscribeSystemTheme } from '../shared/theme';
-import type { AppStoreData, ExtensionSettings, SyncRuntimeState, TabGroup, TabItem } from '../shared/types';
+import type {
+  AppStoreData,
+  BookmarkStoreData,
+  ExtensionSettings,
+  SyncRuntimeState,
+  TabGroup,
+  TabItem,
+} from '../shared/types';
+import { BookmarksView } from './components/BookmarksView';
 import { GoogleDriveModal } from './components/GoogleDriveModal';
 import { GroupCard, type DragItemPayload } from './components/GroupCard';
-import { Header } from './components/Header';
+import { Header, type ManagerSection } from './components/Header';
 import { ImportExportModal } from './components/ImportExportModal';
 import { SettingsBar } from './components/SettingsBar';
 
+function readInitialSection(): ManagerSection {
+  if (typeof window !== 'undefined' && window.location.hash === '#bookmarks') {
+    return 'bookmarks';
+  }
+  return 'tabs';
+}
+
 export function ManagerApp() {
   const [store, setStore] = useState<AppStoreData>(() => createDefaultStore());
+  const [bookmarkStore, setBookmarkStore] = useState<BookmarkStoreData>(() =>
+    createDefaultBookmarkStore()
+  );
   const [syncRuntime, setSyncRuntime] = useState<SyncRuntimeState>(DEFAULT_SYNC_RUNTIME_STATE);
+  const [hasValidToken, setHasValidToken] = useState(false);
+  const [activeSection, setActiveSection] = useState<ManagerSection>(readInitialSection);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
@@ -42,12 +69,26 @@ export function ManagerApp() {
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([loadStore(), loadSyncRuntimeState()]).then(([initial, runtime]) => {
+    void Promise.all([
+      loadStore(),
+      loadBookmarkStore(),
+      loadSyncRuntimeState(),
+      cloudSyncAdapter.getStatus(),
+    ]).then(([initial, initialBookmarks, runtime, driveStatus]) => {
       if (!mounted) return;
       setStore(initial);
+      setBookmarkStore(initialBookmarks);
       setSyncRuntime(runtime);
+      setHasValidToken(driveStatus.hasValidToken);
       applyTheme(initial.settings.theme);
       setLoading(false);
+
+      const prepareBookmarks =
+        initial.settings.autoCaptureBookmarks && initialBookmarks.roots.length === 0
+          ? captureBrowserBookmarks(Date.now(), { skipIfEmptyCloud: true }).then((captured) => {
+              if (mounted) setBookmarkStore(captured);
+            })
+          : Promise.resolve();
 
       if (initial.sync.enabled && initial.settings.autoSync) {
         void cloudSyncAdapter.syncAuto({ checkRemote: true, silent: true }).then((result) => {
@@ -58,6 +99,19 @@ export function ManagerApp() {
             });
           }
         });
+
+        void prepareBookmarks.then(() =>
+          cloudSyncAdapter.syncBookmarksAuto({ silent: true }).then((res) => {
+            if (!mounted) return;
+            if (res.outcome === 'pulled') {
+              void loadBookmarkStore().then((refreshed) => {
+                if (mounted) setBookmarkStore(refreshed);
+              });
+            }
+          })
+        );
+      } else {
+        void prepareBookmarks;
       }
     });
 
@@ -67,16 +121,29 @@ export function ManagerApp() {
       }
     });
 
+    const unsubBookmarks = subscribeBookmarkStoreChanges((nextBookmarks) => {
+      if (mounted) {
+        setBookmarkStore(nextBookmarks);
+      }
+    });
+
     const unsubRuntime = subscribeSyncRuntimeChanges((nextRuntime) => {
       if (mounted) {
         setSyncRuntime(nextRuntime);
       }
     });
 
+    const handleHashChange = () => {
+      setActiveSection(readInitialSection());
+    };
+    window.addEventListener('hashchange', handleHashChange);
+
     return () => {
       mounted = false;
       unsubStore();
+      unsubBookmarks();
       unsubRuntime();
+      window.removeEventListener('hashchange', handleHashChange);
     };
   }, []);
 
@@ -151,6 +218,18 @@ export function ManagerApp() {
       .filter((group): group is TabGroup => group !== null);
   }, [searchQuery, store.groups]);
 
+  const handleSectionChange = (section: ManagerSection) => {
+    setActiveSection(section);
+    setSearchQuery('');
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      const nextUrl =
+        section === 'bookmarks'
+          ? `${window.location.pathname}${window.location.search}#bookmarks`
+          : `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState(null, '', nextUrl);
+    }
+  };
+
   const handleRestoreGroup = async (group: TabGroup) => {
     await restoreTabGroup(group, store.settings.removeOnRestore);
     if (!group.locked && store.settings.removeOnRestore) {
@@ -222,14 +301,22 @@ export function ManagerApp() {
     setStore(updated);
   };
 
+  const handleConvertBookmarkFolderToGroup = async (folderTitle: string, tabs: TabItem[]) => {
+    const updated = await mutateStore((current) => prependGroup(current, tabs, folderTitle).nextStore);
+    setStore(updated);
+  };
+
   const normalizedQuery = searchQuery.trim();
   const filteredTabCount = filteredGroups.reduce((acc, grp) => acc + grp.tabs.length, 0);
 
   return (
     <div className="mgr-root">
       <Header
+        activeSection={activeSection}
+        onSectionChange={handleSectionChange}
         totalGroups={store.groups.length}
         totalTabs={totalTabs}
+        totalBookmarks={bookmarkStore.totalCount}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
@@ -283,66 +370,80 @@ export function ManagerApp() {
           <SettingsBar settings={store.settings} onUpdate={(p) => void handleUpdateSettings(p)} />
         )}
 
-        {normalizedQuery && (
-          <div className="search-banner">
-            <span>
-              <Search size={14} />
-              关键词「<strong>{normalizedQuery}</strong>」匹配 {filteredGroups.length} 个分组、
-              {filteredTabCount} 个标签页
-            </span>
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setSearchQuery('')}
-            >
-              清除筛选
-            </button>
-          </div>
-        )}
-
-        {loading ? (
-          <div className="empty-state">正在读取本地标签页记录...</div>
-        ) : store.groups.length === 0 ? (
-          <section className="empty-state">
-            <div className="empty-state__icon" aria-hidden="true">
-              <Layers size={34} />
-            </div>
-            <h2>还没有已收纳的标签页</h2>
-            <p>
-              点击浏览器右上角的 <strong>autoSyncTab</strong> 图标，或直接在网页空白处点击右键选择「收纳当前窗口所有标签页」即可开始使用。
-            </p>
-          </section>
-        ) : filteredGroups.length === 0 ? (
-          <section className="empty-state">
-            <div className="empty-state__icon" aria-hidden="true">
-              <Search size={30} />
-            </div>
-            <h2>没有找到匹配的标签页</h2>
-            <p>换个关键词试试，或清空搜索条件查看全部分组。</p>
-          </section>
+        {activeSection === 'bookmarks' ? (
+          <BookmarksView
+            bookmarkStore={bookmarkStore}
+            searchQuery={searchQuery}
+            autoCaptureEnabled={store.settings.autoCaptureBookmarks}
+            syncEnabled={store.sync.enabled}
+            hasValidToken={hasValidToken}
+            onStoreChange={setBookmarkStore}
+            onConvertFolderToGroup={handleConvertBookmarkFolderToGroup}
+          />
         ) : (
-          <div className="group-list">
-            {filteredGroups.map((group) => (
-              <GroupCard
-                key={group.id}
-                group={group}
-                allowDrag={!normalizedQuery}
-                activeDrag={activeDrag}
-                onDragStartItem={setActiveDrag}
-                onDragEndItem={() => setActiveDrag(null)}
-                onReorderGroup={(srcId, tgtId) => void handleReorderGroup(srcId, tgtId)}
-                onMoveTab={(srcGid, tid, tgtGid, tgtTid, pos) =>
-                  void handleMoveTab(srcGid, tid, tgtGid, tgtTid, pos)
-                }
-                onRestoreGroup={(grp) => void handleRestoreGroup(grp)}
-                onDeleteGroup={(id) => void handleDeleteGroup(id)}
-                onRenameGroup={(id, title) => void handleRenameGroup(id, title)}
-                onToggleLock={(id, locked) => void handleToggleLock(id, locked)}
-                onRestoreTab={(grp, tab) => void handleRestoreTab(grp, tab)}
-                onDeleteTab={(gid, tid) => void handleDeleteTab(gid, tid)}
-              />
-            ))}
-          </div>
+          <>
+            {normalizedQuery && (
+              <div className="search-banner">
+                <span>
+                  <Search size={14} />
+                  关键词「<strong>{normalizedQuery}</strong>」匹配 {filteredGroups.length} 个分组、
+                  {filteredTabCount} 个标签页
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => setSearchQuery('')}
+                >
+                  清除筛选
+                </button>
+              </div>
+            )}
+
+            {loading ? (
+              <div className="empty-state">正在读取本地标签页记录...</div>
+            ) : store.groups.length === 0 ? (
+              <section className="empty-state">
+                <div className="empty-state__icon" aria-hidden="true">
+                  <Layers size={34} />
+                </div>
+                <h2>还没有已收纳的标签页</h2>
+                <p>
+                  点击浏览器右上角的 <strong>autoSyncTab</strong> 图标，或直接在网页空白处点击右键选择「收纳当前窗口所有标签页」即可开始使用。
+                </p>
+              </section>
+            ) : filteredGroups.length === 0 ? (
+              <section className="empty-state">
+                <div className="empty-state__icon" aria-hidden="true">
+                  <Search size={30} />
+                </div>
+                <h2>没有找到匹配的标签页</h2>
+                <p>换个关键词试试，或清空搜索条件查看全部分组。</p>
+              </section>
+            ) : (
+              <div className="group-list">
+                {filteredGroups.map((group) => (
+                  <GroupCard
+                    key={group.id}
+                    group={group}
+                    allowDrag={!normalizedQuery}
+                    activeDrag={activeDrag}
+                    onDragStartItem={setActiveDrag}
+                    onDragEndItem={() => setActiveDrag(null)}
+                    onReorderGroup={(srcId, tgtId) => void handleReorderGroup(srcId, tgtId)}
+                    onMoveTab={(srcGid, tid, tgtGid, tgtTid, pos) =>
+                      void handleMoveTab(srcGid, tid, tgtGid, tgtTid, pos)
+                    }
+                    onRestoreGroup={(grp) => void handleRestoreGroup(grp)}
+                    onDeleteGroup={(id) => void handleDeleteGroup(id)}
+                    onRenameGroup={(id, title) => void handleRenameGroup(id, title)}
+                    onToggleLock={(id, locked) => void handleToggleLock(id, locked)}
+                    onRestoreTab={(grp, tab) => void handleRestoreTab(grp, tab)}
+                    onDeleteTab={(gid, tid) => void handleDeleteTab(gid, tid)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </main>
 
@@ -361,12 +462,16 @@ export function ManagerApp() {
           onToggleAutoSync={(enabled) => handleUpdateSettings({ autoSync: enabled })}
           onClose={() => setShowDriveModal(false)}
           onSyncUpdated={async () => {
-            const [latest, latestRuntime] = await Promise.all([
+            const [latest, latestBookmarks, latestRuntime, driveStatus] = await Promise.all([
               loadStore(),
+              loadBookmarkStore(),
               loadSyncRuntimeState(),
+              cloudSyncAdapter.getStatus(),
             ]);
             setStore(latest);
+            setBookmarkStore(latestBookmarks);
             setSyncRuntime(latestRuntime);
+            setHasValidToken(driveStatus.hasValidToken);
           }}
         />
       )}

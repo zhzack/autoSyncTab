@@ -1266,3 +1266,234 @@ body {
   align-items: center;
   gap: 6px;
 }
+
+.mgr-nav {
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface-subtle);
+}
+
+.mgr-nav__inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  gap: 8px;
+}
+
+.mgr-nav-tab {
+  border: none;
+  background: transparent;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.mgr-nav-tab:hover {
+  color: var(--text-primary);
+}
+
+.mgr-nav-tab--active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+.mgr-nav-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--bg-pill);
+  color: var(--text-body);
+}
+
+.mgr-nav-tab--active .mgr-nav-count {
+  background: var(--bg-accent-soft);
+  color: var(--text-accent);
+}
+
+.bm-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bm-toolbar {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bm-toolbar__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bm-toolbar__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.bm-toolbar__sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bm-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.bm-create-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-accent);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.bm-create-panel .drive-input {
+  flex: 1 1 180px;
+}
+
+.bm-select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-muted);
+  color: var(--text-primary);
+  border-radius: 8px;
+  font-size: 12px;
+  outline: none;
+  max-width: 240px;
+}
+
+.bm-select:focus {
+  border-color: var(--accent-primary);
+}
+
+.bm-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bm-folder--root {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+
+.bm-folder--nested {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-surface-subtle);
+  overflow: hidden;
+}
+
+.bm-folder-header {
+  padding: 10px 14px;
+  background: var(--bg-surface-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bm-folder-header__left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bm-folder-icon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.bm-folder-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.bm-folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.bm-confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bm-folder-body {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bm-subfolders {
+  padding: 0 8px 8px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bm-empty-folder {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.bm-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-surface-muted);
+  border: 1px solid var(--border-accent);
+}
+
+.bm-edit-row .drive-input {
+  flex: 1 1 160px;
+}
+
+.bm-edit-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

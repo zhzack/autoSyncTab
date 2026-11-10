@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   openManagerAfterStash: true,
   deduplicateOnStash: true,
   autoSync: true,
+  autoCaptureBookmarks: true,
   theme: 'system',
 };
 
@@ -215,6 +216,10 @@ export function normalizeStoreData(raw: unknown, now = Date.now()): AppStoreData
         typeof rawSettings.autoSync === 'boolean'
           ? rawSettings.autoSync
           : DEFAULT_SETTINGS.autoSync,
+      autoCaptureBookmarks:
+        typeof rawSettings.autoCaptureBookmarks === 'boolean'
+          ? rawSettings.autoCaptureBookmarks
+          : DEFAULT_SETTINGS.autoCaptureBookmarks,
       theme: normalizeTheme(rawSettings.theme),
     },
     sync: {
@@ -231,6 +236,20 @@ export function normalizeStoreData(raw: unknown, now = Date.now()): AppStoreData
       accountEmail: typeof rawSync.accountEmail === 'string' ? rawSync.accountEmail : null,
     },
   };
+}
+
+export function hashCanonicalString(canonical: string): string {
+  // Dual 32-bit FNV-1a hash for a compact deterministic content fingerprint.
+  let h1 = 0x811c9dc5;
+  let h2 = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    const c = canonical.charCodeAt(i);
+    h1 ^= c;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= c + (i & 0xff);
+    h2 = Math.imul(h2, 0x01000193);
+  }
+  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 export function computeContentDigest(store: Pick<AppStoreData, 'groups' | 'deletedGroups' | 'settings'>): string {
@@ -258,21 +277,12 @@ export function computeContentDigest(store: Pick<AppStoreData, 'groups' | 'delet
       openManagerAfterStash: store.settings.openManagerAfterStash,
       deduplicateOnStash: store.settings.deduplicateOnStash,
       autoSync: store.settings.autoSync,
+      autoCaptureBookmarks: store.settings.autoCaptureBookmarks,
       theme: store.settings.theme,
     },
   });
 
-  // Dual 32-bit FNV-1a hash for a compact deterministic content fingerprint.
-  let h1 = 0x811c9dc5;
-  let h2 = 0x811c9dc5;
-  for (let i = 0; i < canonical.length; i += 1) {
-    const c = canonical.charCodeAt(i);
-    h1 ^= c;
-    h1 = Math.imul(h1, 0x01000193);
-    h2 ^= c + (i & 0xff);
-    h2 = Math.imul(h2, 0x01000193);
-  }
-  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
+  return hashCanonicalString(canonical);
 }
 
 export function prependGroup(

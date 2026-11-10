@@ -3,7 +3,6 @@ import {
   Check,
   Copy,
   ExternalLink,
-  Globe,
   GripVertical,
   Lock,
   Pencil,
@@ -13,6 +12,7 @@ import {
 } from 'lucide-react';
 import { formatDateTime, getDomain } from '../../shared/formatters';
 import type { TabGroup, TabItem } from '../../shared/types';
+import { SiteFavicon } from './SiteFavicon';
 
 export type DragItemPayload =
   | { kind: 'group'; groupId: string }
@@ -69,24 +69,6 @@ interface GroupCardProps {
   onToggleLock: (groupId: string, locked: boolean) => void;
   onRestoreTab: (group: TabGroup, tab: TabItem) => void;
   onDeleteTab: (groupId: string, tabId: string) => void;
-}
-
-function TabFavicon({ url }: { url?: string }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-
-  if (!url || failedUrl === url) {
-    return <Globe size={15} className="tab-favicon-fallback" aria-hidden="true" />;
-  }
-
-  return (
-    <img
-      src={url}
-      alt=""
-      className="tab-favicon"
-      loading="lazy"
-      onError={() => setFailedUrl(url)}
-    />
-  );
 }
 
 export function GroupCard({
@@ -366,7 +348,7 @@ export function GroupCard({
                 title={tab.url}
                 onClick={() => onRestoreTab(group, tab)}
               >
-                <TabFavicon url={tab.favIconUrl} />
+                <SiteFavicon url={tab.favIconUrl} />
                 <span className="tab-info">
                   <span className="tab-title">{tab.title}</span>
                   <span className="tab-domain">{getDomain(tab.url)}</span>

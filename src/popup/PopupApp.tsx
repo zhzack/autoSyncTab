@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Cloud, FolderOpen, Layers, MinusCircle, PanelTopClose } from 'lucide-react';
+import { Bookmark, Cloud, FolderOpen, Layers, MinusCircle, PanelTopClose } from 'lucide-react';
 import { formatDateTime } from '../shared/formatters';
 import { loadStore, subscribeStoreChanges } from '../shared/storage';
 import { getExtensionOrigin, selectTabsToStash } from '../shared/tabService';
@@ -130,10 +130,11 @@ export function PopupApp() {
     }
   };
 
-  const handleOpenManager = async () => {
+  const handleOpenManager = async (section: 'tabs' | 'bookmarks' = 'tabs') => {
     const msg: BackgroundMessage = {
       type: 'OPEN_MANAGER',
       windowId: summary?.windowId,
+      section,
     };
     await chrome.runtime.sendMessage(msg);
     window.close();
@@ -227,10 +228,25 @@ export function PopupApp() {
       </main>
 
       <footer className="popup-footer">
-        <button type="button" className="manager-link-btn" onClick={() => void handleOpenManager()}>
-          <FolderOpen size={15} />
-          <span>打开标签页管理页</span>
-        </button>
+        <div className="popup-footer-links">
+          <button
+            type="button"
+            className="manager-link-btn"
+            onClick={() => void handleOpenManager('tabs')}
+          >
+            <FolderOpen size={15} />
+            <span>打开标签页管理页</span>
+          </button>
+          <button
+            type="button"
+            className="manager-link-btn manager-link-btn--compact"
+            title="在管理页打开书签列表"
+            onClick={() => void handleOpenManager('bookmarks')}
+          >
+            <Bookmark size={15} />
+            <span>书签列表</span>
+          </button>
+        </div>
         <div
           className={`cloud-hint ${
             syncRuntime.status === 'conflict' || syncRuntime.status === 'auth-expired'

@@ -1,6 +1,7 @@
 import type { RefObject } from 'react';
 import {
   AlertTriangle,
+  Bookmark,
   Cloud,
   Download,
   Layers,
@@ -15,9 +16,14 @@ import {
 import { getThemeLabel } from '../../shared/theme';
 import type { SyncMetadata, SyncRuntimeState, ThemeMode } from '../../shared/types';
 
+export type ManagerSection = 'tabs' | 'bookmarks';
+
 interface HeaderProps {
+  activeSection: ManagerSection;
+  onSectionChange: (section: ManagerSection) => void;
   totalGroups: number;
   totalTabs: number;
+  totalBookmarks: number;
   searchQuery: string;
   onSearchChange: (value: string) => void;
   searchInputRef?: RefObject<HTMLInputElement | null>;
@@ -32,8 +38,11 @@ interface HeaderProps {
 }
 
 export function Header({
+  activeSection,
+  onSectionChange,
   totalGroups,
   totalTabs,
+  totalBookmarks,
   searchQuery,
   onSearchChange,
   searchInputRef,
@@ -117,7 +126,8 @@ export function Header({
           <div>
             <h1>autoSyncTab</h1>
             <p className="mgr-stats">
-              共 <strong>{totalGroups}</strong> 个分组 · <strong>{totalTabs}</strong> 个标签页
+              共 <strong>{totalGroups}</strong> 个分组 · <strong>{totalTabs}</strong> 个标签页 ·{' '}
+              <strong>{totalBookmarks}</strong> 条书签
             </p>
           </div>
         </div>
@@ -128,8 +138,12 @@ export function Header({
             ref={searchInputRef}
             type="search"
             className="mgr-search-input"
-            placeholder="搜索标题、网址或分组名...（快捷键 / 或 Ctrl+K）"
-            aria-label="搜索已收纳标签页"
+            placeholder={
+              activeSection === 'bookmarks'
+                ? '搜索书签标题、网址或文件夹...（快捷键 / 或 Ctrl+K）'
+                : '搜索标题、网址或分组名...（快捷键 / 或 Ctrl+K）'
+            }
+            aria-label={activeSection === 'bookmarks' ? '搜索书签列表' : '搜索已收纳标签页'}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
           />
@@ -181,6 +195,34 @@ export function Header({
           </button>
         </div>
       </div>
+
+      <nav className="mgr-nav" aria-label="主功能视图切换">
+        <div className="mgr-nav__inner" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'tabs'}
+            className={`mgr-nav-tab ${activeSection === 'tabs' ? 'mgr-nav-tab--active' : ''}`}
+            onClick={() => onSectionChange('tabs')}
+          >
+            <Layers size={15} />
+            <span>已收纳标签页</span>
+            <span className="mgr-nav-count">{totalTabs}</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'bookmarks'}
+            className={`mgr-nav-tab ${activeSection === 'bookmarks' ? 'mgr-nav-tab--active' : ''}`}
+            onClick={() => onSectionChange('bookmarks')}
+          >
+            <Bookmark size={15} />
+            <span>书签列表</span>
+            <span className="mgr-nav-count">{totalBookmarks}</span>
+          </button>
+        </div>
+      </nav>
     </header>
   );
 }

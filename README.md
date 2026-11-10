@@ -99,6 +99,7 @@ npm run package:cws   # 生成 release/autosynctab-v0.3.0-cws.zip（自动剥离
   - 全局快捷键（`Alt+Shift+S/A/C/M`）与管理页快捷键（`/` / `Ctrl+K` 搜索、`Esc` 清空/关闭）；
   - 深色模式（跟随系统 / 浅色 / 深色三态切换）；
   - 分组拖拽排序与标签页跨未锁定分组拖拽移动；
+  - 浏览器书签自动抓取与管理（「书签列表」视图支持自动监听本机 Chrome 书签同步至插件及云端 `autosynctab-bookmarks.json`，支持目录树浏览、搜索、重复书签筛选、增删改/移动、导出 HTML 与转为标签组）；
   - Chrome Web Store 上架准备（`npm run package:cws` 与 [docs/CHROME_WEB_STORE.md](docs/CHROME_WEB_STORE.md)）。
 
 #### 连接 Google Drive

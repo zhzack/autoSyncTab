@@ -1,6 +1,7 @@
 import type { DriveErrorCode } from './types';
 
 export const GOOGLE_DRIVE_BACKUP_FILENAME = 'autosynctab-backup.json';
+export const GOOGLE_DRIVE_BOOKMARKS_FILENAME = 'autosynctab-bookmarks.json';
 
 export const GOOGLE_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/drive.appdata',

@@ -112,8 +112,12 @@ export function getExtensionOrigin(): string {
   return chrome.runtime.getURL('');
 }
 
-export async function openOrFocusManagerPage(targetWindowId?: number): Promise<chrome.tabs.Tab> {
+export async function openOrFocusManagerPage(
+  targetWindowId?: number,
+  section?: 'tabs' | 'bookmarks'
+): Promise<chrome.tabs.Tab> {
   const managerUrl = getManagerUrl();
+  const targetUrl = section === 'bookmarks' ? `${managerUrl}#bookmarks` : managerUrl;
   const existingTabs = await chrome.tabs.query({ url: managerUrl });
 
   const preferredTab =
@@ -122,7 +126,11 @@ export async function openOrFocusManagerPage(targetWindowId?: number): Promise<c
       : undefined) ?? existingTabs[0];
 
   if (preferredTab && typeof preferredTab.id === 'number') {
-    await chrome.tabs.update(preferredTab.id, { active: true });
+    const updateProps: chrome.tabs.UpdateProperties = { active: true };
+    if (section && preferredTab.url !== targetUrl) {
+      updateProps.url = targetUrl;
+    }
+    await chrome.tabs.update(preferredTab.id, updateProps);
     if (typeof preferredTab.windowId === 'number') {
       await chrome.windows.update(preferredTab.windowId, { focused: true });
     }
@@ -130,7 +138,7 @@ export async function openOrFocusManagerPage(targetWindowId?: number): Promise<c
   }
 
   return chrome.tabs.create({
-    url: managerUrl,
+    url: targetUrl,
     windowId: targetWindowId,
     active: true,
   });

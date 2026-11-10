@@ -177,8 +177,13 @@ body {
   gap: 8px;
 }
 
+.popup-footer-links {
+  display: flex;
+  gap: 8px;
+}
+
 .manager-link-btn {
-  width: 100%;
+  flex: 1;
   border: 1px solid var(--popup-border-strong);
   background: var(--popup-surface);
   color: var(--popup-text);
@@ -192,6 +197,11 @@ body {
   gap: 6px;
   cursor: pointer;
   transition: background 0.15s ease;
+}
+
+.manager-link-btn--compact {
+  flex: 0 0 auto;
+  padding: 8px 12px;
 }
 
 .manager-link-btn:hover {

@@ -12,7 +12,8 @@ type BooleanSettingKey =
   | 'removeOnRestore'
   | 'openManagerAfterStash'
   | 'deduplicateOnStash'
-  | 'autoSync';
+  | 'autoSync'
+  | 'autoCaptureBookmarks';
 
 interface SettingOption {
   key: BooleanSettingKey;
@@ -45,6 +46,11 @@ const SETTING_OPTIONS: SettingOption[] = [
     key: 'autoSync',
     label: '启用 Google Drive 自动同步',
     description: '连接 Drive 后，本地变更约 30 秒防抖自动上传，打开管理页时自动校验云端',
+  },
+  {
+    key: 'autoCaptureBookmarks',
+    label: '自动抓取当前浏览器书签',
+    description: '自动监听并同步本机 Chrome 书签增删改至「书签列表」与云端备份',
   },
 ];
 

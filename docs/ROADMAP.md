@@ -72,4 +72,5 @@
   - 管理页内快捷键：`/` 或 `Ctrl+K` / `Cmd+K` 快速聚焦搜索框，`Esc` 清空搜索或关闭弹窗。
 - **深色模式（`src/shared/theme.ts`）**：支持「跟随系统 / 浅色 / 深色」三态切换，Popup 与 Manager 均基于 CSS 变量完整适配深色主题。
 - **拖拽排序与跨组移动**：支持未过滤模式下拖拽分组调整顺序，以及拖拽单个标签页在分组内排序或跨未锁定分组移动（自动尊重锁定分组保护）。
+- **书签自动抓取与管理列表（`src/shared/bookmarks.ts`）**：自动监听 `chrome.bookmarks` 变化同步至插件内部及 Google Drive `autosynctab-bookmarks.json`，管理页提供「书签列表」标签页，支持文件夹树展开/折叠、搜索、重复书签筛选、新增/编辑/移动/删除、打开整目录、导出 Netscape HTML 与一键转为标签分组（弹窗与右键菜单均提供快捷入口）。
 - **Chrome Web Store 上架准备**：新增 `npm run package:cws` 自动剥离 `"key"` 打包商店专用包，并编写 [docs/CHROME_WEB_STORE.md](./CHROME_WEB_STORE.md)（权限说明、隐私政策模板、OAuth 回调迁移与审核自检清单）。

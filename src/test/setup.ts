@@ -22,6 +22,7 @@ export const chromeMockControls = {
   focusedWindowIds: [] as number[],
   sentMessages: [] as unknown[],
   alarmsCreated: [] as Array<{ name: string; alarmInfo: chrome.alarms.AlarmCreateInfo }>,
+  bookmarkTree: [] as chrome.bookmarks.BookmarkTreeNode[],
   sendMessageHandler: null as ((msg: unknown) => Promise<unknown> | unknown) | null,
   launchAuthHandler: null as ((authUrl: string) => { redirectUrl?: string; error?: string }) | null,
   reset() {
@@ -34,6 +35,17 @@ export const chromeMockControls = {
     this.focusedWindowIds = [];
     this.sentMessages = [];
     this.alarmsCreated = [];
+    this.bookmarkTree = [
+      {
+        id: '0',
+        title: '',
+        syncing: false,
+        children: [
+          { id: '1', parentId: '0', title: '书签栏', syncing: false, children: [] },
+          { id: '2', parentId: '0', title: '其他书签', syncing: false, children: [] },
+        ],
+      },
+    ];
     this.sendMessageHandler = null;
     this.launchAuthHandler = null;
     chromeMock.runtime.lastError = undefined;
@@ -138,6 +150,100 @@ const chromeMock = {
     }),
     clear: vi.fn(async () => true),
     onAlarm: { addListener: vi.fn() },
+  },
+  bookmarks: {
+    getTree: vi.fn(async () => structuredClone(chromeMockControls.bookmarkTree)),
+    create: vi.fn(async (details: chrome.bookmarks.CreateDetails) => {
+      const id = `bm_${Math.random().toString(36).slice(2, 9)}`;
+      const created: chrome.bookmarks.BookmarkTreeNode = {
+        id,
+        parentId: details.parentId ?? '1',
+        title: details.title ?? '',
+        syncing: false,
+        ...(details.url ? { url: details.url } : { children: [] }),
+        dateAdded: Date.now(),
+      };
+      const append = (nodes: chrome.bookmarks.BookmarkTreeNode[]): boolean => {
+        for (const node of nodes) {
+          if (node.id === (details.parentId ?? '1')) {
+            node.children = [...(node.children ?? []), created];
+            return true;
+          }
+          if (node.children && append(node.children)) return true;
+        }
+        return false;
+      };
+      append(chromeMockControls.bookmarkTree);
+      return structuredClone(created);
+    }),
+    update: vi.fn(async (id: string, changes: chrome.bookmarks.UpdateChanges) => {
+      let updatedNode: chrome.bookmarks.BookmarkTreeNode | null = null;
+      const walk = (nodes: chrome.bookmarks.BookmarkTreeNode[]): void => {
+        for (const node of nodes) {
+          if (node.id === id) {
+            if (typeof changes.title === 'string') node.title = changes.title;
+            if (typeof changes.url === 'string') node.url = changes.url;
+            updatedNode = node;
+            return;
+          }
+          if (node.children) walk(node.children);
+        }
+      };
+      walk(chromeMockControls.bookmarkTree);
+      if (!updatedNode) throw new Error('Bookmark not found');
+      return structuredClone(updatedNode);
+    }),
+    move: vi.fn(async (id: string, destination: chrome.bookmarks.MoveDestination) => {
+      let extracted: chrome.bookmarks.BookmarkTreeNode | null = null;
+      const strip = (
+        nodes: chrome.bookmarks.BookmarkTreeNode[]
+      ): chrome.bookmarks.BookmarkTreeNode[] =>
+        nodes.filter((node) => {
+          if (node.id === id) {
+            extracted = node;
+            return false;
+          }
+          if (node.children) node.children = strip(node.children);
+          return true;
+        });
+      chromeMockControls.bookmarkTree = strip(chromeMockControls.bookmarkTree);
+      if (!extracted) throw new Error('Bookmark not found');
+      const targetParentId = destination.parentId ?? '1';
+      (extracted as chrome.bookmarks.BookmarkTreeNode).parentId = targetParentId;
+      const append = (nodes: chrome.bookmarks.BookmarkTreeNode[]): boolean => {
+        for (const node of nodes) {
+          if (node.id === targetParentId) {
+            node.children = [...(node.children ?? []), extracted!];
+            return true;
+          }
+          if (node.children && append(node.children)) return true;
+        }
+        return false;
+      };
+      append(chromeMockControls.bookmarkTree);
+      return structuredClone(extracted);
+    }),
+    remove: vi.fn(async (id: string) => {
+      const strip = (
+        nodes: chrome.bookmarks.BookmarkTreeNode[]
+      ): chrome.bookmarks.BookmarkTreeNode[] =>
+        nodes.filter((node) => {
+          if (node.id === id) return false;
+          if (node.children) node.children = strip(node.children);
+          return true;
+        });
+      chromeMockControls.bookmarkTree = strip(chromeMockControls.bookmarkTree);
+    }),
+    removeTree: vi.fn(async (id: string) => {
+      await chromeMock.bookmarks.remove(id);
+    }),
+    onCreated: { addListener: vi.fn() },
+    onRemoved: { addListener: vi.fn() },
+    onChanged: { addListener: vi.fn() },
+    onMoved: { addListener: vi.fn() },
+    onChildrenReordered: { addListener: vi.fn() },
+    onImportBegan: { addListener: vi.fn() },
+    onImportEnded: { addListener: vi.fn() },
   },
   identity: {
     getRedirectURL: vi.fn(() => 'https://jlckgkpfpnegkcfmoioonmkjjgoggpmb.chromiumapp.org/'),

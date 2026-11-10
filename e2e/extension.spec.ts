@@ -181,6 +181,36 @@ test('自动加载扩展并验证完整收纳、搜索、深色模式、快捷�
           .sort()
       )
       .toEqual([`${baseUrl}/alpha`, `${baseUrl}/beta`]);
+
+    // 验证浏览器书签自动抓取、书签列表 Tab 浏览与新建/转为标签组管理流程
+    await managerPage.evaluate(async () => {
+      await chrome.bookmarks.create({
+        parentId: '1',
+        title: 'E2E 收藏夹',
+      });
+      const tree = await chrome.bookmarks.getTree();
+      const bar = tree[0].children?.[0];
+      const folder = bar?.children?.find((c) => c.title === 'E2E 收藏夹');
+      if (folder) {
+        await chrome.bookmarks.create({
+          parentId: folder.id,
+          title: 'E2E 书签页面',
+          url: 'https://example.com/e2e-bookmark',
+        });
+      }
+    });
+
+    await managerPage.getByRole('tab', { name: /书签列表/ }).click();
+    await expect(managerPage.getByText('E2E 收藏夹')).toBeVisible();
+    await managerPage.getByRole('button', { name: '展开文件夹 E2E 收藏夹' }).click();
+    await expect(managerPage.getByText('E2E 书签页面')).toBeVisible();
+
+    // 在插件管理界面内再新建一条书签并验证持久化同步至 Chrome 原生书签
+    await managerPage.getByRole('button', { name: '新增书签' }).click();
+    await managerPage.getByLabel('新书签标题').fill('插件新增书签');
+    await managerPage.getByLabel('新书签网址').fill('https://example.com/created-in-mgr');
+    await managerPage.getByRole('button', { name: '确认创建' }).click();
+    await expect(managerPage.getByText('插件新增书签')).toBeVisible();
   } finally {
     await context.close();
     server.close();

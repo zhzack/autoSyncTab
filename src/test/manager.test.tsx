@@ -252,4 +252,94 @@ describe('ManagerApp', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭弹窗' }));
     expect(await screen.findByText('远端更新标题')).toBeInTheDocument();
   });
+
+  it('switches to Bookmarks tab, auto-captures browser bookmarks, creates/edits/deletes items, and converts folder to tab group', async () => {
+    chromeMockControls.bookmarkTree = [
+      {
+        id: '0',
+        title: '',
+        syncing: false,
+        children: [
+          {
+            id: '1',
+            parentId: '0',
+            title: '书签栏',
+            syncing: false,
+            children: [
+              {
+                id: 'b_1',
+                parentId: '1',
+                title: 'MDN Docs',
+                url: 'https://developer.mozilla.org',
+                syncing: false,
+              },
+              {
+                id: 'f_dev',
+                parentId: '1',
+                title: '开发工具',
+                syncing: false,
+                children: [
+                  {
+                    id: 'b_2',
+                    parentId: 'f_dev',
+                    title: 'Playwright',
+                    url: 'https://playwright.dev',
+                    syncing: false,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    render(<ManagerApp />);
+    await screen.findByText('前端文档');
+
+    // Auto-captured count shows in the Bookmarks nav tab
+    const bookmarksTab = await screen.findByRole('tab', { name: /书签列表/ });
+    expect(bookmarksTab).toHaveTextContent('2');
+
+    fireEvent.click(bookmarksTab);
+    expect(await screen.findByText('MDN Docs')).toBeInTheDocument();
+    expect(screen.getByText('开发工具')).toBeInTheDocument();
+
+    // Add a new bookmark inline
+    fireEvent.click(screen.getByRole('button', { name: '新增书签' }));
+    fireEvent.change(screen.getByLabelText('新书签标题'), { target: { value: 'GitHub' } });
+    fireEvent.change(screen.getByLabelText('新书签网址'), { target: { value: 'github.com' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    expect(await screen.findByText('GitHub')).toBeInTheDocument();
+
+    // Search bookmarks
+    const bmSearch = screen.getByLabelText('搜索书签列表');
+    fireEvent.change(bmSearch, { target: { value: 'github' } });
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
+    expect(screen.queryByText('MDN Docs')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清空搜索' }));
+
+    // Edit bookmark title
+    fireEvent.click(screen.getByRole('button', { name: '编辑 GitHub' }));
+    fireEvent.change(screen.getByLabelText('编辑书签标题'), { target: { value: 'GitHub Home' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    expect(await screen.findByText('GitHub Home')).toBeInTheDocument();
+
+    // Convert folder '开发工具' into a stashed tab group
+    const devFolderSection = screen.getByText('开发工具').closest('section')!;
+    const convertBtn = devFolderSection.querySelector('button[title="将此文件夹内的书签复制为一个标签分组"]')!;
+    fireEvent.click(convertBtn);
+    expect(await screen.findByText(/已将「开发工具」的 1 个链接加入已收纳标签页分组/)).toBeInTheDocument();
+
+    // Delete bookmark
+    fireEvent.click(screen.getByRole('button', { name: '删除 GitHub Home' }));
+    await waitFor(() => {
+      expect(screen.queryByText('GitHub Home')).not.toBeInTheDocument();
+    });
+
+    // Switch back to tabs and see the converted group
+    fireEvent.click(screen.getByRole('tab', { name: /已收纳标签页/ }));
+    expect(await screen.findByText('开发工具')).toBeInTheDocument();
+    expect(screen.getByText('Playwright')).toBeInTheDocument();
+  });
 });

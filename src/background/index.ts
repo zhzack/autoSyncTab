@@ -1,3 +1,4 @@
+import { captureBrowserBookmarks } from '../shared/bookmarks';
 import { GoogleDriveError } from '../shared/googleDriveClient';
 import {
   computeContentDigest,
@@ -15,6 +16,7 @@ const MENU_IDS = {
   STASH_CURRENT: 'autosynctab-stash-current',
   STASH_OTHERS: 'autosynctab-stash-others',
   OPEN_MANAGER: 'autosynctab-open-manager',
+  OPEN_BOOKMARKS: 'autosynctab-open-bookmarks',
 } as const;
 
 const COMMAND_IDS = {
@@ -24,7 +26,11 @@ const COMMAND_IDS = {
 } as const;
 
 const AUTO_SYNC_ALARM_NAME = 'autosynctab-auto-sync';
+const BOOKMARK_SYNC_ALARM_NAME = 'autosynctab-bookmark-sync';
 const AUTO_SYNC_DELAY_MINUTES = 0.5; // 30s debounce
+
+let isImportingBookmarks = false;
+let bookmarkCaptureTimer: ReturnType<typeof setTimeout> | null = null;
 
 function registerContextMenus(): void {
   chrome.contextMenus.removeAll(() => {
@@ -53,6 +59,11 @@ function registerContextMenus(): void {
       title: '打开 autoSyncTab 管理页',
       contexts: ['page', 'action'],
     });
+    chrome.contextMenus.create({
+      id: MENU_IDS.OPEN_BOOKMARKS,
+      title: '打开 autoSyncTab 书签列表',
+      contexts: ['page', 'action'],
+    });
   });
 }
 
@@ -72,16 +83,16 @@ async function wrapDriveAction<T>(fn: () => Promise<T>): Promise<DriveActionResu
   }
 }
 
-async function scheduleDebouncedAutoSync(): Promise<void> {
+async function scheduleAlarm(name: string): Promise<void> {
   if (typeof chrome !== 'undefined' && chrome.alarms?.create) {
-    await chrome.alarms.clear(AUTO_SYNC_ALARM_NAME);
-    chrome.alarms.create(AUTO_SYNC_ALARM_NAME, { delayInMinutes: AUTO_SYNC_DELAY_MINUTES });
+    await chrome.alarms.clear(name);
+    chrome.alarms.create(name, { delayInMinutes: AUTO_SYNC_DELAY_MINUTES });
   }
 }
 
-async function cancelDebouncedAutoSync(): Promise<void> {
+async function cancelAlarm(name: string): Promise<void> {
   if (typeof chrome !== 'undefined' && chrome.alarms?.clear) {
-    await chrome.alarms.clear(AUTO_SYNC_ALARM_NAME);
+    await chrome.alarms.clear(name);
   }
 }
 
@@ -93,12 +104,44 @@ async function runBackgroundAutoSync(): Promise<void> {
   await cloudSyncAdapter.syncAuto({ checkRemote: true, silent: true });
 }
 
+async function runBackgroundBookmarkCaptureAndSchedule(): Promise<void> {
+  const store = await loadStore();
+  if (!store.settings.autoCaptureBookmarks) {
+    return;
+  }
+  await captureBrowserBookmarks(Date.now(), { skipIfEmptyCloud: true });
+  if (store.sync.enabled && store.settings.autoSync) {
+    await scheduleAlarm(BOOKMARK_SYNC_ALARM_NAME);
+  }
+}
+
+async function runBackgroundBookmarkCloudSync(): Promise<void> {
+  const store = await loadStore();
+  if (!store.sync.enabled || !store.settings.autoSync) {
+    return;
+  }
+  await cloudSyncAdapter.syncBookmarksAuto({ silent: true });
+}
+
+function scheduleBookmarkCapture(): void {
+  if (isImportingBookmarks) return;
+  if (bookmarkCaptureTimer !== null) {
+    clearTimeout(bookmarkCaptureTimer);
+  }
+  bookmarkCaptureTimer = setTimeout(() => {
+    bookmarkCaptureTimer = null;
+    void runBackgroundBookmarkCaptureAndSchedule();
+  }, 300);
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   registerContextMenus();
+  void runBackgroundBookmarkCaptureAndSchedule();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
   void runBackgroundAutoSync();
+  void runBackgroundBookmarkCaptureAndSchedule().then(() => runBackgroundBookmarkCloudSync());
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -114,7 +157,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       void stashTabsInWindow('others', windowId);
       break;
     case MENU_IDS.OPEN_MANAGER:
-      void openOrFocusManagerPage(windowId);
+      void openOrFocusManagerPage(windowId, 'tabs');
+      break;
+    case MENU_IDS.OPEN_BOOKMARKS:
+      void openOrFocusManagerPage(windowId, 'bookmarks');
       break;
     default:
       break;
@@ -140,7 +186,22 @@ chrome.commands?.onCommand?.addListener((command) => {
 chrome.alarms?.onAlarm?.addListener((alarm) => {
   if (alarm.name === AUTO_SYNC_ALARM_NAME) {
     void runBackgroundAutoSync();
+  } else if (alarm.name === BOOKMARK_SYNC_ALARM_NAME) {
+    void runBackgroundBookmarkCloudSync();
   }
+});
+
+chrome.bookmarks?.onCreated?.addListener(() => scheduleBookmarkCapture());
+chrome.bookmarks?.onRemoved?.addListener(() => scheduleBookmarkCapture());
+chrome.bookmarks?.onChanged?.addListener(() => scheduleBookmarkCapture());
+chrome.bookmarks?.onMoved?.addListener(() => scheduleBookmarkCapture());
+chrome.bookmarks?.onChildrenReordered?.addListener(() => scheduleBookmarkCapture());
+chrome.bookmarks?.onImportBegan?.addListener(() => {
+  isImportingBookmarks = true;
+});
+chrome.bookmarks?.onImportEnded?.addListener(() => {
+  isImportingBookmarks = false;
+  scheduleBookmarkCapture();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -148,7 +209,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const nextStore = normalizeStoreData(changes[STORAGE_KEY].newValue);
 
   if (!nextStore.sync.enabled || !nextStore.settings.autoSync) {
-    void cancelDebouncedAutoSync();
+    void cancelAlarm(AUTO_SYNC_ALARM_NAME);
+    void cancelAlarm(BOOKMARK_SYNC_ALARM_NAME);
     return;
   }
 
@@ -160,9 +222,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   if (isDirty) {
     void saveSyncRuntimeState({ pendingLocalChanges: true });
-    void scheduleDebouncedAutoSync();
+    void scheduleAlarm(AUTO_SYNC_ALARM_NAME);
   } else {
-    void cancelDebouncedAutoSync();
+    void cancelAlarm(AUTO_SYNC_ALARM_NAME);
   }
 });
 
@@ -177,7 +239,9 @@ chrome.runtime.onMessage.addListener(
         void stashTabsInWindow(message.scope, message.windowId).then(sendResponse);
         return true;
       case 'OPEN_MANAGER':
-        void openOrFocusManagerPage(message.windowId).then(() => sendResponse({ ok: true }));
+        void openOrFocusManagerPage(message.windowId, message.section).then(() =>
+          sendResponse({ ok: true })
+        );
         return true;
       case 'DRIVE_STATUS':
         void wrapDriveAction(() => cloudSyncAdapter.getStatus()).then(sendResponse);

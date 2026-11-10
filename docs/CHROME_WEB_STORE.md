@@ -49,6 +49,7 @@ npm run package:cws
 | `contextMenus` | 在网页与扩展图标右键菜单中提供「收纳全部 / 仅收纳当前页 / 收纳其他标签页 / 打开管理页」快捷入口。 |
 | `identity` | 通过 `chrome.identity.launchWebAuthFlow` 让用户自主登录 Google 账号并获取最小权限访问令牌用于 Google Drive 备份。 |
 | `alarms` | 在启用 Google Drive 自动同步后，于本地数据变更约 30 秒后防抖触发后台增量同步，避免频繁请求。 |
+| `bookmarks` | 自动读取本机浏览器书签树同步至插件「书签列表」视图，并支持在插件管理页内增删改、整理书签与同步至用户的 Google Drive 私人应用空间。 |
 | Host Permissions (`googleapis.com`, `oauth2.googleapis.com`) | 仅用于读取登录邮箱、上传/下载位于用户个人 Google Drive `appDataFolder` 隐藏目录中的备份文件，以及在断开连接时撤销访问令牌。 |
 
 ---

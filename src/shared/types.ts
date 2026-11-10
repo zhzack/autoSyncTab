@@ -28,7 +28,42 @@ export interface ExtensionSettings {
   openManagerAfterStash: boolean;
   deduplicateOnStash: boolean;
   autoSync: boolean;
+  autoCaptureBookmarks: boolean;
   theme: ThemeMode;
+}
+
+export type BookmarkRootRole = 'bookmarks_bar' | 'other' | 'mobile';
+
+export interface BookmarkNode {
+  id: string;
+  parentId?: string;
+  title: string;
+  url?: string;
+  role?: BookmarkRootRole;
+  dateAdded?: number;
+  index?: number;
+  children?: BookmarkNode[];
+}
+
+export interface BookmarkStoreData {
+  schemaVersion: number;
+  updatedAt: number;
+  source: 'browser' | 'cloud' | 'manual';
+  totalCount: number;
+  folderCount: number;
+  roots: BookmarkNode[];
+  lastCapturedAt: number | null;
+  lastSyncedAt: number | null;
+  lastSyncedHash: string | null;
+  remoteFileId: string | null;
+  remoteModifiedTime: string | null;
+}
+
+export interface DriveBookmarksSummary {
+  fileId: string;
+  syncedAt: number;
+  bookmarkCount: number;
+  folderCount: number;
 }
 
 export interface SyncMetadata {
@@ -164,7 +199,7 @@ export type DriveActionResult<T = void> =
 
 export type BackgroundMessage =
   | { type: 'STASH_TABS'; scope: StashScope; windowId?: number }
-  | { type: 'OPEN_MANAGER'; windowId?: number }
+  | { type: 'OPEN_MANAGER'; windowId?: number; section?: 'tabs' | 'bookmarks' }
   | { type: 'DRIVE_STATUS' }
   | { type: 'DRIVE_SAVE_CLIENT_ID'; clientId: string }
   | { type: 'DRIVE_CONNECT'; clientId?: string }

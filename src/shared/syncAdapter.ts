@@ -1,3 +1,9 @@
+import {
+  computeBookmarkDigest,
+  loadBookmarkStore,
+  normalizeBookmarkStoreData,
+  saveBookmarkStore,
+} from './bookmarks';
 import { exportToJson, parseJsonBackup } from './formatters';
 import {
   buildGoogleAuthUrl,
@@ -8,6 +14,7 @@ import {
   getDriveFileMetadata,
   GoogleDriveError,
   GOOGLE_DRIVE_BACKUP_FILENAME,
+  GOOGLE_DRIVE_BOOKMARKS_FILENAME,
   isValidGoogleClientId,
   parseAuthRedirectUrl,
   revokeGoogleToken,
@@ -36,6 +43,7 @@ import type {
   AutoSyncResult,
   ConflictResolutionStrategy,
   DriveBackupSummary,
+  DriveBookmarksSummary,
   DriveRestoreSummary,
   DriveStatusSnapshot,
   SyncRestoreMode,
@@ -53,6 +61,9 @@ export interface CloudSyncAdapter {
   restore(mode: SyncRestoreMode): Promise<DriveRestoreSummary>;
   syncAuto(options?: { checkRemote?: boolean; silent?: boolean }): Promise<AutoSyncResult>;
   resolveConflict(strategy: ConflictResolutionStrategy): Promise<AutoSyncResult>;
+  backupBookmarks(): Promise<DriveBookmarksSummary>;
+  pullBookmarks(): Promise<DriveBookmarksSummary>;
+  syncBookmarksAuto(options?: { silent?: boolean }): Promise<AutoSyncResult>;
 }
 
 function hasUsableToken(token: string | null, expiresAt: number | null, now = Date.now()): boolean {
@@ -234,13 +245,14 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
 
   private async resolveRemoteFileMeta(
     token: string,
-    cachedFileId: string | null
+    cachedFileId: string | null,
+    fileName = GOOGLE_DRIVE_BACKUP_FILENAME
   ): Promise<DriveFileMeta | null> {
     if (cachedFileId) {
       const meta = await getDriveFileMetadata(token, cachedFileId, this.fetchFn);
       if (meta) return meta;
     }
-    return findDriveBackupFile(token, GOOGLE_DRIVE_BACKUP_FILENAME, this.fetchFn);
+    return findDriveBackupFile(token, fileName, this.fetchFn);
   }
 
   async backup(): Promise<DriveBackupSummary> {
@@ -799,6 +811,178 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       });
       return { outcome: 'merged', syncedAt: now };
     });
+  }
+
+  async backupBookmarks(): Promise<DriveBookmarksSummary> {
+    return this.handleUnauthorized(async (token) => {
+      const bookmarkStore = await loadBookmarkStore();
+      let remoteFileId = bookmarkStore.remoteFileId;
+
+      if (!remoteFileId) {
+        const existing = await findDriveBackupFile(
+          token,
+          GOOGLE_DRIVE_BOOKMARKS_FILENAME,
+          this.fetchFn
+        );
+        remoteFileId = existing?.id ?? null;
+      }
+
+      const payload = JSON.stringify(
+        {
+          schemaVersion: bookmarkStore.schemaVersion,
+          updatedAt: bookmarkStore.updatedAt,
+          roots: bookmarkStore.roots,
+        },
+        null,
+        2
+      );
+
+      const uploaded = await uploadDriveBackupFile(
+        token,
+        payload,
+        remoteFileId,
+        GOOGLE_DRIVE_BOOKMARKS_FILENAME,
+        this.fetchFn
+      );
+
+      const syncedAt = Date.now();
+      const digest = computeBookmarkDigest(bookmarkStore.roots);
+      await saveBookmarkStore({
+        ...bookmarkStore,
+        remoteFileId: uploaded.id,
+        remoteModifiedTime: uploaded.modifiedTime,
+        lastSyncedAt: syncedAt,
+        lastSyncedHash: digest,
+      });
+
+      return {
+        fileId: uploaded.id,
+        syncedAt,
+        bookmarkCount: bookmarkStore.totalCount,
+        folderCount: bookmarkStore.folderCount,
+      };
+    });
+  }
+
+  async pullBookmarks(): Promise<DriveBookmarksSummary> {
+    return this.handleUnauthorized(async (token) => {
+      const current = await loadBookmarkStore();
+      let fileId = current.remoteFileId;
+
+      const meta = await this.resolveRemoteFileMeta(
+        token,
+        fileId,
+        GOOGLE_DRIVE_BOOKMARKS_FILENAME
+      );
+      if (!meta) {
+        throw new GoogleDriveError(
+          'Google Drive 中尚未找到书签备份文件，请先同步上传浏览器书签。',
+          'NO_BACKUP'
+        );
+      }
+      fileId = meta.id;
+
+      const rawJson = await downloadDriveBackupFile(token, fileId, this.fetchFn);
+      const parsed = normalizeBookmarkStoreData(JSON.parse(rawJson));
+      const syncedAt = Date.now();
+      const digest = computeBookmarkDigest(parsed.roots);
+
+      await saveBookmarkStore({
+        ...parsed,
+        source: 'cloud',
+        lastCapturedAt: current.lastCapturedAt,
+        lastSyncedAt: syncedAt,
+        lastSyncedHash: digest,
+        remoteFileId: fileId,
+        remoteModifiedTime: meta.modifiedTime,
+      });
+
+      return {
+        fileId,
+        syncedAt,
+        bookmarkCount: parsed.totalCount,
+        folderCount: parsed.folderCount,
+      };
+    });
+  }
+
+  async syncBookmarksAuto(options: { silent?: boolean } = {}): Promise<AutoSyncResult> {
+    const [store, bookmarkStore, auth] = await Promise.all([
+      loadStore(),
+      loadBookmarkStore(),
+      loadAuthState(),
+    ]);
+
+    if (!store.sync.enabled) {
+      return { outcome: 'skipped', syncedAt: bookmarkStore.lastSyncedAt };
+    }
+
+    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
+      return { outcome: 'auth-expired', syncedAt: bookmarkStore.lastSyncedAt };
+    }
+
+    try {
+      return await this.handleUnauthorized(async (token) => {
+        const now = Date.now();
+        const remoteMeta = await this.resolveRemoteFileMeta(
+          token,
+          bookmarkStore.remoteFileId,
+          GOOGLE_DRIVE_BOOKMARKS_FILENAME
+        );
+        const localDigest = computeBookmarkDigest(bookmarkStore.roots);
+        const isLocalDirty =
+          bookmarkStore.lastSyncedHash !== null
+            ? localDigest !== bookmarkStore.lastSyncedHash
+            : bookmarkStore.totalCount > 0;
+
+        if (!remoteMeta) {
+          if (bookmarkStore.totalCount === 0) {
+            return { outcome: 'up-to-date', syncedAt: bookmarkStore.lastSyncedAt };
+          }
+          const summary = await this.backupBookmarks();
+          return { outcome: 'uploaded', syncedAt: summary.syncedAt };
+        }
+
+        // Never overwrite non-empty cloud bookmarks with an empty local browser tree automatically.
+        if (bookmarkStore.totalCount === 0) {
+          const pulled = await this.pullBookmarks();
+          return { outcome: 'pulled', syncedAt: pulled.syncedAt };
+        }
+
+        const remoteUnchanged =
+          Boolean(bookmarkStore.lastSyncedAt) &&
+          Boolean(bookmarkStore.remoteModifiedTime) &&
+          Boolean(remoteMeta.modifiedTime) &&
+          remoteMeta.modifiedTime === bookmarkStore.remoteModifiedTime;
+
+        if (remoteUnchanged) {
+          if (!isLocalDirty) {
+            return { outcome: 'up-to-date', syncedAt: bookmarkStore.lastSyncedAt };
+          }
+          const summary = await this.backupBookmarks();
+          return { outcome: 'uploaded', syncedAt: summary.syncedAt };
+        }
+
+        if (!isLocalDirty) {
+          const pulled = await this.pullBookmarks();
+          return { outcome: 'pulled', syncedAt: pulled.syncedAt };
+        }
+
+        // In single-browser auto-capture mode, upload local bookmarks snapshot to Drive.
+        const summary = await this.backupBookmarks();
+        return { outcome: 'uploaded', syncedAt: summary.syncedAt ?? now };
+      });
+    } catch (error) {
+      if (options.silent) {
+        return {
+          outcome: error instanceof GoogleDriveError && error.code === 'AUTH_REQUIRED'
+            ? 'auth-expired'
+            : 'skipped',
+          syncedAt: bookmarkStore.lastSyncedAt,
+        };
+      }
+      throw error;
+    }
   }
 }
 
