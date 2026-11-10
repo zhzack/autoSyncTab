@@ -1,5 +1,6 @@
 import { useState, type DragEvent } from 'react';
 import {
+  BookmarkPlus,
   Check,
   Copy,
   ExternalLink,
@@ -64,6 +65,7 @@ interface GroupCardProps {
     position?: 'before' | 'after'
   ) => void;
   onRestoreGroup: (group: TabGroup) => void;
+  onSaveGroupAsBookmarks: (group: TabGroup) => Promise<void> | void;
   onDeleteGroup: (groupId: string) => void;
   onRenameGroup: (groupId: string, title: string) => void;
   onToggleLock: (groupId: string, locked: boolean) => void;
@@ -80,6 +82,7 @@ export function GroupCard({
   onReorderGroup,
   onMoveTab,
   onRestoreGroup,
+  onSaveGroupAsBookmarks,
   onDeleteGroup,
   onRenameGroup,
   onToggleLock,
@@ -89,6 +92,8 @@ export function GroupCard({
   const [isEditing, setIsEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(group.title);
   const [copiedTabId, setCopiedTabId] = useState<string | null>(null);
+  const [savingBookmarks, setSavingBookmarks] = useState(false);
+  const [savedBookmarks, setSavedBookmarks] = useState(false);
   const [isCardDropTarget, setIsCardDropTarget] = useState(false);
   const [tabDropTarget, setTabDropTarget] = useState<{
     tabId: string;
@@ -116,6 +121,18 @@ export function GroupCard({
       }, 1500);
     } catch {
       // Clipboard API may be unavailable in restricted test environments.
+    }
+  };
+
+  const handleSaveAsBookmarks = async () => {
+    if (savingBookmarks) return;
+    setSavingBookmarks(true);
+    try {
+      await onSaveGroupAsBookmarks(group);
+      setSavedBookmarks(true);
+      window.setTimeout(() => setSavedBookmarks(false), 2000);
+    } finally {
+      setSavingBookmarks(false);
     }
   };
 
@@ -246,6 +263,18 @@ export function GroupCard({
           >
             <ExternalLink size={14} />
             <span>恢复全部</span>
+          </button>
+
+          <button
+            type="button"
+            className="btn btn--ghost"
+            disabled={savingBookmarks}
+            title="将分组内全部链接直接保存为 Chrome 书签文件夹"
+            aria-label={`将分组 ${group.title || '未命名分组'} 存为书签`}
+            onClick={() => void handleSaveAsBookmarks()}
+          >
+            {savedBookmarks ? <Check size={14} /> : <BookmarkPlus size={14} />}
+            <span>{savingBookmarks ? '保存中...' : savedBookmarks ? '已存书签' : '存为书签'}</span>
           </button>
 
           <button

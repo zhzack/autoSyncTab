@@ -342,4 +342,18 @@ describe('ManagerApp', () => {
     expect(await screen.findByText('开发工具')).toBeInTheDocument();
     expect(screen.getByText('Playwright')).toBeInTheDocument();
   });
+
+  it('saves a stashed tab group directly as a named bookmark folder', async () => {
+    render(<ManagerApp />);
+    expect(await screen.findByText('前端文档')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '将分组 前端文档 存为书签' }));
+    expect(await screen.findByText(/已将「前端文档」的 2 个链接加入书签栏/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看书签列表' }));
+    expect(await screen.findByText('前端文档')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '展开文件夹 前端文档' }));
+    expect(await screen.findByText('React Docs')).toBeInTheDocument();
+    expect(screen.getByText('TypeScript')).toBeInTheDocument();
+  });
 });

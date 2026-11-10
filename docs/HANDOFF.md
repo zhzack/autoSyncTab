@@ -41,7 +41,7 @@
   - 快捷键：`manifest.json` `commands`（`Alt+Shift+S/A/C/M`）及管理页 `/`、`Ctrl+K`、`Esc`；
   - 深色模式：`src/shared/theme.ts` 支持 `system / light / dark` 三态并同步应用至 Popup 与 Manager；
   - 拖拽排序：`GroupCard` 支持分组拖拽排序及标签页同组/跨未锁定分组拖拽移动；
-  - 书签自动抓取与管理：`src/shared/bookmarks.ts` 监听 `chrome.bookmarks` 变更自动同步到 `autosynctab_bookmarks_v1`，独立上传/拉取 Google Drive `autosynctab-bookmarks.json`，并在管理页「书签列表」提供文件夹树浏览、搜索、重复检测、增删改/移动、导出 HTML 与文件夹转标签组功能（同时在空浏览器下保护云端书签不被空树覆盖）；
+  - 书签自动抓取与管理：`src/shared/bookmarks.ts` 监听 `chrome.bookmarks` 变更自动同步到 `autosynctab_bookmarks_v1`，独立上传/拉取 Google Drive `autosynctab-bookmarks.json`，并在管理页「书签列表」提供文件夹树浏览、搜索、重复检测、增删改/移动、导出 HTML，同时实现书签文件夹与已收纳标签分组的双向互转（`collectFolderBookmarksAsTabs` 与分组旁「存为书签」按钮 `saveTabGroupAsBookmarkFolder`，在空浏览器下保护云端书签不被空树覆盖）；
   - Chrome Web Store 资料：[docs/CHROME_WEB_STORE.md](./CHROME_WEB_STORE.md) 与 `npm run package:cws`。
 
 ---
@@ -53,7 +53,7 @@
   - `src/shared/types.ts`（核心类型定义）
   - `src/shared/storage.ts`（`chrome.storage.local` 封装、墓碑维护、拖拽重排 `reorderGroupsInStore`/`moveTabInStore`、内容指纹 `computeContentDigest`）
   - `src/shared/syncMerge.ts`（三方分组级合并 `reconcileStores` 与冲突合并 `mergeConflictingGroup`）
-  - `src/shared/bookmarks.ts`（浏览器书签树抓取、增删改/移动、重复检测、HTML 导出与云端防误覆盖保护）
+  - `src/shared/bookmarks.ts`（浏览器书签树抓取、增删改/移动、重复检测、HTML 导出、分组与书签双向转换及云端防误覆盖保护）
   - `src/shared/snapshots.ts`（历史版本快照管理）
   - `src/shared/syncState.ts`（同步运行时状态与冲突载荷持久化）
   - `src/shared/theme.ts`（深浅主题解析与系统主题订阅）

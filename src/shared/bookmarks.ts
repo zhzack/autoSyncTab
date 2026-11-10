@@ -1,5 +1,6 @@
+import { formatDateTime } from './formatters';
 import { createId, hashCanonicalString } from './storage';
-import type { BookmarkNode, BookmarkRootRole, BookmarkStoreData, TabItem } from './types';
+import type { BookmarkNode, BookmarkRootRole, BookmarkStoreData, TabGroup, TabItem } from './types';
 
 export const BOOKMARKS_STORAGE_KEY = 'autosynctab_bookmarks_v1';
 export const BOOKMARK_SCHEMA_VERSION = 1;
@@ -702,4 +703,136 @@ export async function removeBookmarkEntry(
   const next = updateStoreWithRoots(current, nextRoots, now);
   await saveBookmarkStore(next);
   return next;
+}
+
+export interface SaveGroupToBookmarksResult {
+  store: BookmarkStoreData;
+  folderId: string;
+  folderTitle: string;
+  addedCount: number;
+  skippedCount: number;
+}
+
+export async function saveTabGroupAsBookmarkFolder(
+  group: TabGroup,
+  targetParentId?: string
+): Promise<SaveGroupToBookmarksResult> {
+  const now = Date.now();
+  const folderTitle = group.title.trim() || `未命名分组 (${formatDateTime(group.createdAt)})`;
+
+  if (typeof chrome !== 'undefined' && chrome.bookmarks?.getTree && chrome.bookmarks?.create) {
+    try {
+      const tree = await chrome.bookmarks.getTree();
+      const topLevel = tree[0]?.children ?? tree;
+      const parentNode =
+        (targetParentId ? topLevel.find((node) => node.id === targetParentId) : undefined) ??
+        topLevel.find((node, idx) => inferChromeRootRole(node, idx) === 'bookmarks_bar') ??
+        topLevel[0];
+
+      if (parentNode) {
+        const existingFolder = (parentNode.children ?? []).find(
+          (child) => !child.url && child.title === folderTitle
+        );
+
+        let folderId: string;
+        const existingUrls = new Set<string>();
+
+        if (existingFolder) {
+          folderId = existingFolder.id;
+          for (const item of existingFolder.children ?? []) {
+            if (item.url) existingUrls.add(item.url);
+          }
+        } else {
+          const created = await chrome.bookmarks.create({
+            parentId: parentNode.id,
+            title: folderTitle,
+          });
+          folderId = created.id;
+        }
+
+        let addedCount = 0;
+        let skippedCount = 0;
+
+        for (const tab of group.tabs) {
+          if (existingUrls.has(tab.url)) {
+            skippedCount += 1;
+            continue;
+          }
+          await chrome.bookmarks.create({
+            parentId: folderId,
+            title: tab.title || tab.url,
+            url: tab.url,
+          });
+          existingUrls.add(tab.url);
+          addedCount += 1;
+        }
+
+        const store = await captureBrowserBookmarks(now);
+        return { store, folderId, folderTitle, addedCount, skippedCount };
+      }
+    } catch {
+      // Fall back to plugin-local bookmark store if native Chrome bookmarks API fails.
+    }
+  }
+
+  const current = await loadBookmarkStore();
+  let roots = current.roots;
+  if (roots.length === 0) {
+    roots = [
+      {
+        id: '1',
+        title: '书签栏',
+        role: 'bookmarks_bar',
+        children: [],
+      },
+    ];
+  }
+
+  const parentRoot =
+    (targetParentId ? roots.find((r) => r.id === targetParentId) : undefined) ??
+    roots.find((r) => r.role === 'bookmarks_bar') ??
+    roots[0];
+
+  const existingFolder = (parentRoot.children ?? []).find(
+    (child) => typeof child.url !== 'string' && child.title === folderTitle
+  );
+  const folderId = existingFolder ? existingFolder.id : createId('fld');
+
+  if (!existingFolder) {
+    roots = insertBookmarkNodeInTree(roots, parentRoot.id, {
+      id: folderId,
+      parentId: parentRoot.id,
+      title: folderTitle,
+      dateAdded: now,
+      children: [],
+    });
+  }
+
+  const existingUrls = new Set(
+    (existingFolder?.children ?? [])
+      .map((item) => item.url)
+      .filter((url): url is string => typeof url === 'string')
+  );
+
+  let addedCount = 0;
+  let skippedCount = 0;
+  for (const tab of group.tabs) {
+    if (existingUrls.has(tab.url)) {
+      skippedCount += 1;
+      continue;
+    }
+    roots = insertBookmarkNodeInTree(roots, folderId, {
+      id: createId('bm'),
+      parentId: folderId,
+      title: tab.title || tab.url,
+      url: tab.url,
+      dateAdded: now,
+    });
+    existingUrls.add(tab.url);
+    addedCount += 1;
+  }
+
+  const next = updateStoreWithRoots(current, roots, now, current.source);
+  await saveBookmarkStore(next);
+  return { store: next, folderId, folderTitle, addedCount, skippedCount };
 }

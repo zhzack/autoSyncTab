@@ -168,6 +168,15 @@ test('自动加载扩展并验证完整收纳、搜索、深色模式、快捷�
     );
     await managerPage.getByRole('button', { name: '关闭弹窗' }).click();
 
+    // 将已收纳分组一键存为书签文件夹，并验证在书签列表可见
+    await managerPage.getByRole('button', { name: '将分组 E2E 自动化分组 存为书签' }).click();
+    await expect(managerPage.getByText(/已将「E2E 自动化分组」的 2 个链接加入书签栏/)).toBeVisible();
+    await managerPage.getByRole('button', { name: '查看书签列表' }).click();
+    await expect(managerPage.getByText('E2E 自动化分组')).toBeVisible();
+    await managerPage.getByRole('button', { name: '展开文件夹 E2E 自动化分组' }).click();
+    await expect(managerPage.getByText('测试页面 Alpha')).toBeVisible();
+    await managerPage.getByRole('tab', { name: /已收纳标签页/ }).click();
+
     // 恢复整组标签页并验证重新打开
     await managerPage.getByRole('button', { name: '恢复全部' }).click();
     await expect(managerPage.getByText('还没有已收纳的标签页')).toBeVisible();

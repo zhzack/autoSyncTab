@@ -14,6 +14,7 @@ import {
   moveBookmarkEntry,
   removeBookmarkEntry,
   saveBookmarkStore,
+  saveTabGroupAsBookmarkFolder,
   updateBookmarkEntry,
 } from '../shared/bookmarks';
 import { createDefaultStore, saveAuthState, saveStore, updateSyncInStore } from '../shared/storage';
@@ -243,5 +244,43 @@ describe('bookmarks capture, CRUD, filtering & Drive sync', () => {
     expect(pulled.source).toBe('cloud');
     expect(pulled.totalCount).toBe(4);
     expect(computeBookmarkDigest(pulled.roots)).toBe(pulled.lastSyncedHash);
+  });
+
+  it('saves a tab group into a named bookmark folder and deduplicates repeated saves', async () => {
+    await captureBrowserBookmarks(1000);
+    const group = {
+      id: 'grp_save',
+      title: '常用技术站',
+      createdAt: 1000,
+      updatedAt: 1000,
+      locked: false,
+      tabs: [
+        { id: 't1', url: 'https://react.dev', title: 'React 官方' },
+        { id: 't2', url: 'https://vuejs.org', title: 'Vue 官方' },
+      ],
+    };
+
+    const first = await saveTabGroupAsBookmarkFolder(group);
+    expect(first.folderTitle).toBe('常用技术站');
+    expect(first.addedCount).toBe(2);
+    expect(first.skippedCount).toBe(0);
+
+    const bar = first.store.roots[0];
+    const createdFolder = bar.children?.find((c) => c.title === '常用技术站');
+    expect(createdFolder?.children?.map((c) => c.url)).toEqual([
+      'https://react.dev',
+      'https://vuejs.org',
+    ]);
+
+    // Second save with an extra tab reuses the folder and skips existing URLs
+    const second = await saveTabGroupAsBookmarkFolder({
+      ...group,
+      tabs: [
+        ...group.tabs,
+        { id: 't3', url: 'https://svelte.dev', title: 'Svelte' },
+      ],
+    });
+    expect(second.addedCount).toBe(1);
+    expect(second.skippedCount).toBe(2);
   });
 });

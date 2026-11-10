@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Layers, Search } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Layers, Search, X } from 'lucide-react';
 import {
   captureBrowserBookmarks,
   createDefaultBookmarkStore,
   loadBookmarkStore,
+  saveTabGroupAsBookmarkFolder,
   subscribeBookmarkStoreChanges,
 } from '../shared/bookmarks';
 import { createSnapshot } from '../shared/snapshots';
@@ -65,6 +66,7 @@ export function ManagerApp() {
   const [showImportExport, setShowImportExport] = useState(false);
   const [showDriveModal, setShowDriveModal] = useState(false);
   const [activeDrag, setActiveDrag] = useState<DragItemPayload | null>(null);
+  const [tabsNotice, setTabsNotice] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -306,6 +308,20 @@ export function ManagerApp() {
     setStore(updated);
   };
 
+  const handleSaveGroupAsBookmarks = async (group: TabGroup) => {
+    const result = await saveTabGroupAsBookmarkFolder(group);
+    setBookmarkStore(result.store);
+    if (result.addedCount > 0) {
+      setTabsNotice(
+        `已将「${result.folderTitle}」的 ${result.addedCount} 个链接加入书签栏${
+          result.skippedCount > 0 ? `（跳过 ${result.skippedCount} 个已存在链接）` : ''
+        }`
+      );
+    } else {
+      setTabsNotice(`分组「${result.folderTitle}」内的链接已全部存在于书签栏中`);
+    }
+  };
+
   const normalizedQuery = searchQuery.trim();
   const filteredTabCount = filteredGroups.reduce((acc, grp) => acc + grp.tabs.length, 0);
 
@@ -382,6 +398,35 @@ export function ManagerApp() {
           />
         ) : (
           <>
+            {tabsNotice && (
+              <div className="modal-alert modal-alert--ok sync-alert-banner" role="status">
+                <span>
+                  <CheckCircle2 size={15} />
+                  {tabsNotice}
+                </span>
+                <div className="bm-edit-actions">
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    onClick={() => {
+                      setTabsNotice(null);
+                      handleSectionChange('bookmarks');
+                    }}
+                  >
+                    查看书签列表
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="关闭提示"
+                    onClick={() => setTabsNotice(null)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {normalizedQuery && (
               <div className="search-banner">
                 <span>
@@ -434,6 +479,7 @@ export function ManagerApp() {
                       void handleMoveTab(srcGid, tid, tgtGid, tgtTid, pos)
                     }
                     onRestoreGroup={(grp) => void handleRestoreGroup(grp)}
+                    onSaveGroupAsBookmarks={handleSaveGroupAsBookmarks}
                     onDeleteGroup={(id) => void handleDeleteGroup(id)}
                     onRenameGroup={(id, title) => void handleRenameGroup(id, title)}
                     onToggleLock={(id, locked) => void handleToggleLock(id, locked)}
