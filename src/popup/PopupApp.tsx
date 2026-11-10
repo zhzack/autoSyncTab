@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Cloud, FolderOpen, Layers, MinusCircle, PanelTopClose } from 'lucide-react';
 import { formatDateTime } from '../shared/formatters';
-import { loadStore } from '../shared/storage';
+import { loadStore, subscribeStoreChanges } from '../shared/storage';
 import { getExtensionOrigin, selectTabsToStash } from '../shared/tabService';
-import type { BackgroundMessage, StashResult, StashScope } from '../shared/types';
+import { applyTheme, subscribeSystemTheme } from '../shared/theme';
+import {
+  DEFAULT_SYNC_RUNTIME_STATE,
+  loadSyncRuntimeState,
+  subscribeSyncRuntimeChanges,
+} from '../shared/syncState';
+import type {
+  BackgroundMessage,
+  StashResult,
+  StashScope,
+  SyncRuntimeState,
+  ThemeMode,
+} from '../shared/types';
 
 interface WindowSummary {
   windowId?: number;
@@ -15,17 +27,20 @@ interface WindowSummary {
   syncEnabled: boolean;
   syncEmail: string | null;
   lastSyncedAt: number | null;
+  theme: ThemeMode;
 }
 
 export function PopupApp() {
   const [summary, setSummary] = useState<WindowSummary | null>(null);
+  const [syncRuntime, setSyncRuntime] = useState<SyncRuntimeState>(DEFAULT_SYNC_RUNTIME_STATE);
   const [busyScope, setBusyScope] = useState<StashScope | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const refreshSummary = useCallback(async () => {
-    const [tabs, store] = await Promise.all([
+    const [tabs, store, runtime] = await Promise.all([
       chrome.tabs.query({ currentWindow: true }),
       loadStore(),
+      loadSyncRuntimeState(),
     ]);
     const origin = getExtensionOrigin();
 
@@ -33,6 +48,8 @@ export function PopupApp() {
     const currentSelection = selectTabsToStash(tabs, 'current', store.settings, origin);
     const othersSelection = selectTabsToStash(tabs, 'others', store.settings, origin);
 
+    applyTheme(store.settings.theme);
+    setSyncRuntime(runtime);
     setSummary({
       windowId: tabs[0]?.windowId,
       allCount: allSelection.tabIdsToClose.length,
@@ -43,12 +60,48 @@ export function PopupApp() {
       syncEnabled: store.sync.enabled,
       syncEmail: store.sync.accountEmail,
       lastSyncedAt: store.sync.lastSyncedAt,
+      theme: store.settings.theme,
     });
   }, []);
 
   useEffect(() => {
     void refreshSummary();
+
+    const unsubStore = subscribeStoreChanges((nextStore) => {
+      applyTheme(nextStore.settings.theme);
+      setSummary((prev) =>
+        prev
+          ? {
+              ...prev,
+              savedGroups: nextStore.groups.length,
+              savedTabs: nextStore.groups.reduce((acc, grp) => acc + grp.tabs.length, 0),
+              syncEnabled: nextStore.sync.enabled,
+              syncEmail: nextStore.sync.accountEmail,
+              lastSyncedAt: nextStore.sync.lastSyncedAt,
+              theme: nextStore.settings.theme,
+            }
+          : prev
+      );
+    });
+
+    const unsubSync = subscribeSyncRuntimeChanges((nextRuntime) => {
+      setSyncRuntime(nextRuntime);
+    });
+
+    return () => {
+      unsubStore();
+      unsubSync();
+    };
   }, [refreshSummary]);
+
+  const activeTheme = summary?.theme ?? 'system';
+  useEffect(() => {
+    applyTheme(activeTheme);
+    if (activeTheme !== 'system') return;
+    return subscribeSystemTheme(() => {
+      applyTheme('system');
+    });
+  }, [activeTheme]);
 
   const handleStash = async (scope: StashScope) => {
     setBusyScope(scope);
@@ -87,6 +140,28 @@ export function PopupApp() {
   };
 
   const isBusy = busyScope !== null;
+
+  const renderCloudHintText = () => {
+    if (!summary?.syncEnabled) {
+      return 'Google Drive 未连接 · 可在管理页授权同步';
+    }
+    if (syncRuntime.status === 'conflict') {
+      return 'Drive 检测到同步冲突 · 请在管理页处理';
+    }
+    if (syncRuntime.status === 'auth-expired') {
+      return 'Drive 授权已过期 · 请在管理页重新登录';
+    }
+    if (syncRuntime.status === 'syncing') {
+      return 'Google Drive 正在自动同步...';
+    }
+    if (syncRuntime.pendingLocalChanges) {
+      return '有本地变更待自动同步至 Google Drive';
+    }
+    if (summary.lastSyncedAt) {
+      return `Drive 已同步 · ${formatDateTime(summary.lastSyncedAt)}`;
+    }
+    return `Drive 已连接 · ${summary.syncEmail || '可自动同步至云端'}`;
+  };
 
   return (
     <div className="popup-root">
@@ -156,15 +231,16 @@ export function PopupApp() {
           <FolderOpen size={15} />
           <span>打开标签页管理页</span>
         </button>
-        <div className="cloud-hint" title="可在管理页右上角进行 Google Drive 备份与恢复">
+        <div
+          className={`cloud-hint ${
+            syncRuntime.status === 'conflict' || syncRuntime.status === 'auth-expired'
+              ? 'cloud-hint--warn'
+              : ''
+          }`}
+          title="可在管理页右上角进行 Google Drive 同步与快照管理"
+        >
           <Cloud size={13} />
-          <span>
-            {summary?.syncEnabled
-              ? summary.lastSyncedAt
-                ? `Drive 已连接 · 上次同步 ${formatDateTime(summary.lastSyncedAt)}`
-                : `Drive 已连接 · ${summary.syncEmail || '可备份至云端'}`
-              : 'Google Drive 未连接 · 可在管理页授权同步'}
-          </span>
+          <span>{renderCloudHintText()}</span>
         </div>
       </footer>
     </div>

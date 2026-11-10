@@ -7,6 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 const DIST_DIR = resolve(ROOT, 'dist');
 const RELEASE_DIR = resolve(ROOT, 'release');
+const isCwsBuild = process.argv.includes('--cws');
 
 if (!existsSync(DIST_DIR)) {
   console.error('Error: dist/ directory not found. Run `npm run build` first.');
@@ -14,7 +15,9 @@ if (!existsSync(DIST_DIR)) {
 }
 
 const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
-const zipName = `${pkg.name}-v${pkg.version}.zip`;
+const zipName = isCwsBuild
+  ? `${pkg.name}-v${pkg.version}-cws.zip`
+  : `${pkg.name}-v${pkg.version}.zip`;
 const outPath = resolve(RELEASE_DIR, zipName);
 
 mkdirSync(RELEASE_DIR, { recursive: true });
@@ -30,7 +33,13 @@ function addDirectoryToZip(dir) {
       addDirectoryToZip(fullPath);
     } else {
       const relPath = relative(DIST_DIR, fullPath).replace(/\\/g, '/');
-      zip.file(relPath, readFileSync(fullPath));
+      if (isCwsBuild && relPath === 'manifest.json') {
+        const manifest = JSON.parse(readFileSync(fullPath, 'utf8'));
+        delete manifest.key;
+        zip.file(relPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      } else {
+        zip.file(relPath, readFileSync(fullPath));
+      }
     }
   }
 }
@@ -45,4 +54,4 @@ await new Promise((resolvePromise, rejectPromise) => {
     .on('error', rejectPromise);
 });
 
-console.log(`Created extension package: ${outPath}`);
+console.log(`Created extension package${isCwsBuild ? ' (Chrome Web Store)' : ''}: ${outPath}`);

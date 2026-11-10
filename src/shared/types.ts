@@ -15,18 +15,29 @@ export interface TabGroup {
   tabs: TabItem[];
 }
 
+export interface DeletedGroupTombstone {
+  id: string;
+  deletedAt: number;
+}
+
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 export interface ExtensionSettings {
   ignorePinnedTabs: boolean;
   removeOnRestore: boolean;
   openManagerAfterStash: boolean;
   deduplicateOnStash: boolean;
+  autoSync: boolean;
+  theme: ThemeMode;
 }
 
 export interface SyncMetadata {
   provider: 'google-drive';
   enabled: boolean;
   lastSyncedAt: number | null;
+  lastSyncedHash: string | null;
   remoteFileId: string | null;
+  remoteModifiedTime: string | null;
   accountEmail: string | null;
 }
 
@@ -65,8 +76,78 @@ export interface AppStoreData {
   schemaVersion: number;
   updatedAt: number;
   groups: TabGroup[];
+  deletedGroups: DeletedGroupTombstone[];
   settings: ExtensionSettings;
   sync: SyncMetadata;
+}
+
+export type SnapshotReason =
+  | 'manual'
+  | 'pre-restore'
+  | 'pre-auto-sync'
+  | 'pre-conflict'
+  | 'pre-import';
+
+export interface StoreSnapshot {
+  id: string;
+  createdAt: number;
+  reason: SnapshotReason;
+  note?: string;
+  groupCount: number;
+  tabCount: number;
+  store: {
+    schemaVersion: number;
+    updatedAt: number;
+    groups: TabGroup[];
+    deletedGroups: DeletedGroupTombstone[];
+    settings: ExtensionSettings;
+  };
+}
+
+export type SyncConflictReason =
+  | 'both-modified'
+  | 'local-edited-remote-deleted'
+  | 'remote-edited-local-deleted';
+
+export interface SyncConflictItem {
+  groupId: string;
+  reason: SyncConflictReason;
+  localGroup: TabGroup | null;
+  remoteGroup: TabGroup | null;
+}
+
+export type SyncActivityState = 'idle' | 'syncing' | 'conflict' | 'auth-expired' | 'error';
+
+export type ConflictResolutionStrategy = 'merge' | 'keep-local' | 'use-remote';
+
+export interface SyncConflictPayload {
+  detectedAt: number;
+  fileId: string;
+  remoteModifiedTime: string | null;
+  items: SyncConflictItem[];
+  remoteBackup: AppStoreData;
+}
+
+export interface SyncRuntimeState {
+  status: SyncActivityState;
+  pendingLocalChanges: boolean;
+  lastCheckedAt: number | null;
+  lastError: string | null;
+  conflict: SyncConflictPayload | null;
+}
+
+export interface AutoSyncResult {
+  outcome:
+    | 'skipped'
+    | 'up-to-date'
+    | 'uploaded'
+    | 'pulled'
+    | 'merged'
+    | 'conflict'
+    | 'auth-expired';
+  syncedAt: number | null;
+  message?: string;
+  conflictCount?: number;
 }
 
 export type StashScope = 'all' | 'current' | 'others';
@@ -89,7 +170,8 @@ export type BackgroundMessage =
   | { type: 'DRIVE_CONNECT'; clientId?: string }
   | { type: 'DRIVE_DISCONNECT' }
   | { type: 'DRIVE_BACKUP' }
-  | { type: 'DRIVE_RESTORE'; mode: SyncRestoreMode };
+  | { type: 'DRIVE_RESTORE'; mode: SyncRestoreMode }
+  | { type: 'SYNC_NOW' };
 
 export type StashResult =
   | { ok: true; stashedCount: number; groupId: string | null }

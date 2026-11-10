@@ -184,6 +184,44 @@ export async function findDriveBackupFile(
   };
 }
 
+export async function getDriveFileMetadata(
+  accessToken: string,
+  fileId: string,
+  fetchFn: FetchLike = fetch
+): Promise<DriveFileMeta | null> {
+  const url =
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}` +
+    '?fields=id,modifiedTime,trashed';
+
+  const response = await fetchFn(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throwForDriveFailure(response, await readErrorMessage(response));
+  }
+
+  const payload = (await response.json()) as {
+    id?: string;
+    modifiedTime?: string;
+    trashed?: boolean;
+  };
+  if (!payload?.id || payload.trashed) {
+    return null;
+  }
+
+  return {
+    id: payload.id,
+    modifiedTime: payload.modifiedTime ?? null,
+  };
+}
+
 export async function uploadDriveBackupFile(
   accessToken: string,
   contentJson: string,

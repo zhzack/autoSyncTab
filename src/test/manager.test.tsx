@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ManagerApp } from '../manager/ManagerApp';
-import { createDefaultStore, prependGroup, saveStore } from '../shared/storage';
+import {
+  createDefaultStore,
+  loadStore,
+  prependGroup,
+  saveAuthState,
+  saveStore,
+  updateSyncInStore,
+} from '../shared/storage';
+import { saveSyncRuntimeState } from '../shared/syncState';
 import { chromeMockControls } from './setup';
 
 describe('ManagerApp', () => {
   beforeEach(async () => {
     chromeMockControls.reset();
+    document.documentElement.dataset.theme = 'light';
     let store = createDefaultStore(1000);
     store = prependGroup(
       store,
@@ -106,5 +115,141 @@ describe('ManagerApp', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /立即备份到云端/ }));
     expect(await screen.findByText(/备份成功！已上传 1 个分组/)).toBeInTheDocument();
+  });
+
+  it('cycles theme mode (system -> light -> dark) and handles keyboard shortcuts', async () => {
+    render(<ManagerApp />);
+    await screen.findByText('前端文档');
+
+    const themeBtn = screen.getByRole('button', { name: /切换主题模式/ });
+    fireEvent.click(themeBtn); // system -> light
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('light');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /切换主题模式/ })); // light -> dark
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('dark');
+    });
+    expect((await loadStore()).settings.theme).toBe('dark');
+
+    // Keyboard shortcut '/' focuses search input and 'Escape' clears it
+    const searchInput = screen.getByLabelText('搜索已收纳标签页');
+    fireEvent.keyDown(window, { key: '/' });
+    expect(document.activeElement).toBe(searchInput);
+
+    fireEvent.change(searchInput, { target: { value: 'React' } });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(searchInput).toHaveValue('');
+  });
+
+  it('supports drag-and-drop group reordering and cross-group tab moving', async () => {
+    let store = await loadStore();
+    store = prependGroup(
+      store,
+      [{ id: 't3', url: 'https://vite.dev', title: 'Vite Docs' }],
+      '构建工具',
+      2000
+    ).nextStore;
+    await saveStore(store);
+
+    render(<ManagerApp />);
+    await screen.findByText('构建工具');
+    await screen.findByText('前端文档');
+
+    // Drag group '前端文档' onto '构建工具' card to reorder
+    const frontendDragHandle = screen.getByRole('button', { name: /拖拽调整分组 前端文档 顺序/ });
+    const targetCard = document.querySelector('[data-group-id="' + store.groups[0].id + '"]')!;
+    fireEvent.dragStart(frontendDragHandle);
+    fireEvent.dragOver(targetCard);
+    fireEvent.drop(targetCard);
+
+    await waitFor(async () => {
+      const updated = await loadStore();
+      expect(updated.groups.map((g) => g.title)).toEqual(['前端文档', '构建工具']);
+    });
+
+    // Drag 'React Docs' row from '前端文档' onto '构建工具' card
+    const reactRow = screen.getByText('React Docs').closest('li')!;
+    const buildCard = document.querySelector('[data-group-id="' + store.groups[0].id + '"]')!;
+    fireEvent.dragStart(reactRow);
+    fireEvent.dragOver(buildCard);
+    fireEvent.drop(buildCard);
+
+    await waitFor(async () => {
+      const updated = await loadStore();
+      const buildGroup = updated.groups.find((g) => g.title === '构建工具')!;
+      expect(buildGroup.tabs.map((t) => t.title)).toEqual(['Vite Docs', 'React Docs']);
+    });
+  });
+
+  it('displays conflict banner, resolves conflict in Drive modal, and manages snapshots', async () => {
+    const store = await loadStore();
+    const localGroup = store.groups[0];
+    const enabledStore = updateSyncInStore(store, {
+      enabled: true,
+      accountEmail: 'tester@gmail.com',
+      remoteFileId: 'file_1',
+      lastSyncedAt: 500,
+    });
+    await saveStore(enabledStore);
+    await saveAuthState({
+      clientId: '1234567890-abcdefg.apps.googleusercontent.com',
+      accessToken: 'tok_valid',
+      tokenExpiresAt: Date.now() + 3_600_000,
+      accountEmail: 'tester@gmail.com',
+    });
+
+    const remoteBackup = {
+      ...enabledStore,
+      groups: [
+        {
+          ...localGroup,
+          title: '远端更新标题',
+          updatedAt: 1500,
+          tabs: [{ id: 't_rem', url: 'https://vitest.dev', title: 'Vitest Docs' }],
+        },
+      ],
+    };
+
+    await saveSyncRuntimeState({
+      status: 'conflict',
+      pendingLocalChanges: true,
+      lastCheckedAt: 1600,
+      lastError: null,
+      conflict: {
+        detectedAt: 1600,
+        fileId: 'file_1',
+        remoteModifiedTime: '2026-11-11T00:00:00Z',
+        items: [
+          {
+            groupId: localGroup.id,
+            reason: 'both-modified',
+            localGroup,
+            remoteGroup: remoteBackup.groups[0],
+          },
+        ],
+        remoteBackup,
+      },
+    });
+
+    render(<ManagerApp />);
+    expect(await screen.findByText(/检测到 1 处多端同步冲突/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '立即处理冲突' }));
+    expect(await screen.findByText('检测到 1 处同步冲突')).toBeInTheDocument();
+
+    // Switch to Snapshots tab and create manual snapshot
+    fireEvent.click(screen.getByRole('button', { name: /历史快照/ }));
+    fireEvent.click(screen.getByRole('button', { name: '创建当前快照' }));
+    expect(await screen.findByText(/共 1 个分组 · 2 个标签页/)).toBeInTheDocument();
+
+    // Switch back to sync tab and resolve conflict using remote
+    fireEvent.click(screen.getByRole('button', { name: '云端同步' }));
+    fireEvent.click(screen.getByRole('button', { name: '以云端为准覆盖本地' }));
+    expect(await screen.findByText(/已使用云端版本覆盖本地记录/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭弹窗' }));
+    expect(await screen.findByText('远端更新标题')).toBeInTheDocument();
   });
 });

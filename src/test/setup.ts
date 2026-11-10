@@ -21,6 +21,7 @@ export const chromeMockControls = {
   removedTabIds: [] as number[],
   focusedWindowIds: [] as number[],
   sentMessages: [] as unknown[],
+  alarmsCreated: [] as Array<{ name: string; alarmInfo: chrome.alarms.AlarmCreateInfo }>,
   sendMessageHandler: null as ((msg: unknown) => Promise<unknown> | unknown) | null,
   launchAuthHandler: null as ((authUrl: string) => { redirectUrl?: string; error?: string }) | null,
   reset() {
@@ -32,6 +33,7 @@ export const chromeMockControls = {
     this.removedTabIds = [];
     this.focusedWindowIds = [];
     this.sentMessages = [];
+    this.alarmsCreated = [];
     this.sendMessageHandler = null;
     this.launchAuthHandler = null;
     chromeMock.runtime.lastError = undefined;
@@ -50,6 +52,7 @@ const chromeMock = {
       return { ok: true, stashedCount: 0, groupId: null };
     }),
     onInstalled: { addListener: vi.fn() },
+    onStartup: { addListener: vi.fn() },
     onMessage: { addListener: vi.fn() },
   },
   storage: {
@@ -124,6 +127,17 @@ const chromeMock = {
     removeAll: vi.fn((cb?: () => void) => cb?.()),
     create: vi.fn(),
     onClicked: { addListener: vi.fn() },
+  },
+  commands: {
+    onCommand: { addListener: vi.fn() },
+    getAll: vi.fn(async () => []),
+  },
+  alarms: {
+    create: vi.fn((name: string, alarmInfo: chrome.alarms.AlarmCreateInfo) => {
+      chromeMockControls.alarmsCreated.push({ name, alarmInfo });
+    }),
+    clear: vi.fn(async () => true),
+    onAlarm: { addListener: vi.fn() },
   },
   identity: {
     getRedirectURL: vi.fn(() => 'https://jlckgkpfpnegkcfmoioonmkjjgoggpmb.chromiumapp.org/'),

@@ -36,7 +36,7 @@
 
 ### 1. 固定扩展 ID 与权限配置
 - 在 `public/manifest.json` 中固定 RSA 公钥 `"key"`，确保任意测试环境（如 `.dev-chrome-profile`、E2E、Chrome）均获得稳定一致的扩展 ID：`jlckgkpfpnegkcfmoioonmkjjgoggpmb`。
-  *(注：未来若需提交 Chrome Web Store 审核上架，上传前请移除 `"key"` 字段以由商店统一分配。)*
+  *(注：提交 Chrome Web Store 审核上架时请使用 `npm run package:cws`，脚本会自动从压缩包内的 `manifest.json` 剥离 `"key"` 字段。)*
 - 申请 `"identity"` 权限及 `https://www.googleapis.com/*`、`https://oauth2.googleapis.com/*` 主机权限。
 
 ### 2. 多账户友好的 OAuth 2.0 授权方案
@@ -54,8 +54,22 @@
 
 ---
 
-## 阶段三：自动同步、冲突处理与体验增强
+## 阶段三：自动同步、冲突处理与体验增强（已完成）
 
-- **自动同步策略**：本地变更后防抖自动上传（如 30 秒节流）+ 启动时拉取远端校验。
-- **冲突检测与合并**：基于 `updatedAt`、分组级合并与历史版本快照保留，避免多设备覆盖丢失记录。
-- **体验升级**：键盘快捷键（`manifest.json` `commands`）、深色模式、标签页拖拽分组排序、上架 Chrome Web Store 资料准备。
+### 1. 自动同步策略
+- **30 秒防抖后台同步**：在 `public/manifest.json` 注册 `"alarms"` 权限，由 `src/background/index.ts` 监听 `chrome.storage.onChanged`，通过 `computeContentDigest` 精准识别内容变更（同步元数据更新不触发循环上传），约 30 秒后自动触发 `cloudSyncAdapter.syncAuto()`。
+- **启动与打开页远端校验**：浏览器启动（`chrome.runtime.onStartup`）及打开管理页时轻量检查远端 `modifiedTime`；无本地未同步修改时自动拉取远端更新，有差异时执行三方合并。
+- **实时同步状态反馈**：通过 `autosynctab_sync_runtime_v1` 在后台与 Popup / Manager 间共享 `idle / syncing / conflict / auth-expired / error` 状态。
+
+### 2. 冲突检测、三方合并与历史版本快照
+- **墓碑机制与三方合并（`src/shared/syncMerge.ts`）**：引入 `deletedGroups` 删除墓碑（保留 30 天）与 `reconcileStores` 三方分组级合并，无重叠编辑时跨设备自动无感合并。
+- **冲突检测与保护**：同一分组被多端并发修改或出现编辑/删除冲突时，自动暂停上传、生成 `pre-conflict` 安全快照，并在管理页与同步弹窗展示冲突提示，支持「智能合并双方（保留全量标签去重）」「以本地为准覆盖云端」「以云端为准覆盖本地」。
+- **历史快照管理（`src/shared/snapshots.ts`）**：本地自动与手动保留最近 15 份快照（覆盖恢复、冲突保护、覆盖导入前自动生成），支持在 Google Drive 弹窗的「历史快照」页签一键查看、合并恢复或覆盖恢复。
+
+### 3. 体验升级与上架准备
+- **键盘快捷键**：
+  - 全局扩展快捷键（`manifest.json` `commands`）：`Alt+Shift+S`（弹窗）、`Alt+Shift+A`（收纳全部）、`Alt+Shift+C`（仅收纳当前页）、`Alt+Shift+M`（打开管理页）。
+  - 管理页内快捷键：`/` 或 `Ctrl+K` / `Cmd+K` 快速聚焦搜索框，`Esc` 清空搜索或关闭弹窗。
+- **深色模式（`src/shared/theme.ts`）**：支持「跟随系统 / 浅色 / 深色」三态切换，Popup 与 Manager 均基于 CSS 变量完整适配深色主题。
+- **拖拽排序与跨组移动**：支持未过滤模式下拖拽分组调整顺序，以及拖拽单个标签页在分组内排序或跨未锁定分组移动（自动尊重锁定分组保护）。
+- **Chrome Web Store 上架准备**：新增 `npm run package:cws` 自动剥离 `"key"` 打包商店专用包，并编写 [docs/CHROME_WEB_STORE.md](./CHROME_WEB_STORE.md)（权限说明、隐私政策模板、OAuth 回调迁移与审核自检清单）。

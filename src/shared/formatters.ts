@@ -102,6 +102,7 @@ export function exportToJson(store: AppStoreData): string {
     schemaVersion: store.schemaVersion,
     updatedAt: store.updatedAt,
     groups: store.groups,
+    deletedGroups: store.deletedGroups,
     settings: store.settings,
   };
   return JSON.stringify(cleanBackup, null, 2);

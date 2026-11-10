@@ -1,7 +1,7 @@
 {
   "name": "autosynctab",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "autoSyncTab - OneTab-like Chrome extension with React, TypeScript, Vite, and Google Drive sync.",
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "dev:browser": "node scripts/launch-dev-browser.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "package": "npm run build && node scripts/package-extension.mjs",
+    "package:cws": "npm run build && node scripts/package-extension.mjs --cws",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {

@@ -5,24 +5,36 @@ import {
   downloadDriveBackupFile,
   fetchGoogleUserEmail,
   findDriveBackupFile,
+  getDriveFileMetadata,
   GoogleDriveError,
   GOOGLE_DRIVE_BACKUP_FILENAME,
   isValidGoogleClientId,
   parseAuthRedirectUrl,
   revokeGoogleToken,
   uploadDriveBackupFile,
+  type DriveFileMeta,
   type FetchLike,
 } from './googleDriveClient';
+import { createSnapshot } from './snapshots';
 import {
   applyRemoteBackup,
   clearAuthSession,
+  computeContentDigest,
   loadAuthState,
   loadStore,
   mutateStore,
   saveAuthState,
   updateSyncInStore,
 } from './storage';
+import { reconcileStores } from './syncMerge';
+import {
+  DEFAULT_SYNC_RUNTIME_STATE,
+  loadSyncRuntimeState,
+  saveSyncRuntimeState,
+} from './syncState';
 import type {
+  AutoSyncResult,
+  ConflictResolutionStrategy,
   DriveBackupSummary,
   DriveRestoreSummary,
   DriveStatusSnapshot,
@@ -39,6 +51,8 @@ export interface CloudSyncAdapter {
   disconnect(): Promise<DriveStatusSnapshot>;
   backup(): Promise<DriveBackupSummary>;
   restore(mode: SyncRestoreMode): Promise<DriveRestoreSummary>;
+  syncAuto(options?: { checkRemote?: boolean; silent?: boolean }): Promise<AutoSyncResult>;
+  resolveConflict(strategy: ConflictResolutionStrategy): Promise<AutoSyncResult>;
 }
 
 function hasUsableToken(token: string | null, expiresAt: number | null, now = Date.now()): boolean {
@@ -60,6 +74,7 @@ function formatWebAuthError(rawMessage?: string): string {
 
 export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
   private readonly customFetch?: FetchLike;
+  private syncInFlight: Promise<AutoSyncResult> | null = null;
 
   constructor(fetchFn?: FetchLike) {
     this.customFetch = fetchFn;
@@ -163,6 +178,11 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       })
     );
 
+    const runtime = await loadSyncRuntimeState();
+    if (runtime.status === 'auth-expired' || runtime.status === 'error') {
+      await saveSyncRuntimeState({ status: 'idle', lastError: null });
+    }
+
     return this.getStatus();
   }
 
@@ -178,8 +198,11 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
         enabled: false,
         accountEmail: null,
         remoteFileId: null,
+        remoteModifiedTime: null,
+        lastSyncedHash: null,
       })
     );
+    await saveSyncRuntimeState({ ...DEFAULT_SYNC_RUNTIME_STATE });
 
     return this.getStatus();
   }
@@ -200,9 +223,24 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
     } catch (error) {
       if (error instanceof GoogleDriveError && error.code === 'AUTH_REQUIRED') {
         await clearAuthSession();
+        await saveSyncRuntimeState({
+          status: 'auth-expired',
+          lastError: error.message,
+        });
       }
       throw error;
     }
+  }
+
+  private async resolveRemoteFileMeta(
+    token: string,
+    cachedFileId: string | null
+  ): Promise<DriveFileMeta | null> {
+    if (cachedFileId) {
+      const meta = await getDriveFileMetadata(token, cachedFileId, this.fetchFn);
+      if (meta) return meta;
+    }
+    return findDriveBackupFile(token, GOOGLE_DRIVE_BACKUP_FILENAME, this.fetchFn);
   }
 
   async backup(): Promise<DriveBackupSummary> {
@@ -228,13 +266,24 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       );
 
       const syncedAt = Date.now();
+      const digest = computeContentDigest(store);
       await mutateStore((current) =>
         updateSyncInStore(current, {
           enabled: true,
           remoteFileId: uploaded.id,
+          remoteModifiedTime: uploaded.modifiedTime,
           lastSyncedAt: syncedAt,
+          lastSyncedHash: digest,
         })
       );
+
+      await saveSyncRuntimeState({
+        status: 'idle',
+        pendingLocalChanges: false,
+        lastCheckedAt: syncedAt,
+        lastError: null,
+        conflict: null,
+      });
 
       return {
         fileId: uploaded.id,
@@ -293,6 +342,15 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       const remoteBackup = parseJsonBackup(rawJson);
       const syncedAt = Date.now();
 
+      if (store.groups.length > 0) {
+        await createSnapshot(
+          store,
+          'pre-restore',
+          mode === 'replace' ? '云端覆盖恢复前自动快照' : '云端合并恢复前自动快照',
+          syncedAt
+        );
+      }
+
       const updatedStore = await mutateStore((current) => {
         const merged = applyRemoteBackup(current, remoteBackup, mode, syncedAt);
         return updateSyncInStore(
@@ -301,9 +359,18 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
             enabled: true,
             remoteFileId: fileId,
             lastSyncedAt: syncedAt,
+            lastSyncedHash: mode === 'replace' ? computeContentDigest(merged) : null,
           },
           syncedAt
         );
+      });
+
+      await saveSyncRuntimeState({
+        status: 'idle',
+        pendingLocalChanges: mode === 'merge',
+        lastCheckedAt: syncedAt,
+        lastError: null,
+        conflict: null,
       });
 
       return {
@@ -313,6 +380,424 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
         restoredTabCount: remoteBackup.groups.reduce((sum, g) => sum + g.tabs.length, 0),
         totalGroupCount: updatedStore.groups.length,
       };
+    });
+  }
+
+  async syncAuto(options: { checkRemote?: boolean; silent?: boolean } = {}): Promise<AutoSyncResult> {
+    if (this.syncInFlight) {
+      return this.syncInFlight;
+    }
+
+    const runner = this.performAutoSync(options).finally(() => {
+      this.syncInFlight = null;
+    });
+    this.syncInFlight = runner;
+    return runner;
+  }
+
+  private async performAutoSync(options: {
+    checkRemote?: boolean;
+    silent?: boolean;
+  }): Promise<AutoSyncResult> {
+    const checkRemote = options.checkRemote ?? true;
+    const store = await loadStore();
+
+    if (!store.sync.enabled) {
+      return { outcome: 'skipped', syncedAt: store.sync.lastSyncedAt };
+    }
+
+    const localDigest = computeContentDigest(store);
+    const isLocalDirty =
+      store.sync.lastSyncedHash !== null
+        ? localDigest !== store.sync.lastSyncedHash
+        : store.groups.length > 0;
+
+    const runtime = await loadSyncRuntimeState();
+    if (runtime.conflict) {
+      await saveSyncRuntimeState({
+        status: 'conflict',
+        pendingLocalChanges: true,
+      });
+      return {
+        outcome: 'conflict',
+        syncedAt: store.sync.lastSyncedAt,
+        conflictCount: runtime.conflict.items.length,
+      };
+    }
+
+    const auth = await loadAuthState();
+    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
+      await clearAuthSession();
+      await saveSyncRuntimeState({
+        status: 'auth-expired',
+        pendingLocalChanges: isLocalDirty,
+        lastError: 'Google 授权已过期，请重新登录后继续自动同步。',
+      });
+      return { outcome: 'auth-expired', syncedAt: store.sync.lastSyncedAt };
+    }
+
+    await saveSyncRuntimeState({
+      status: 'syncing',
+      lastError: null,
+    });
+
+    try {
+      return await this.handleUnauthorized(async (token) => {
+        const now = Date.now();
+        let remoteMeta: DriveFileMeta | null = null;
+
+        if (checkRemote || !store.sync.remoteFileId) {
+          remoteMeta = await this.resolveRemoteFileMeta(token, store.sync.remoteFileId);
+        }
+
+        // Case 1: No backup file on Drive yet.
+        if (!remoteMeta) {
+          if (store.groups.length === 0 && !isLocalDirty) {
+            await saveSyncRuntimeState({
+              status: 'idle',
+              pendingLocalChanges: false,
+              lastCheckedAt: now,
+              lastError: null,
+            });
+            return { outcome: 'up-to-date', syncedAt: store.sync.lastSyncedAt };
+          }
+
+          const uploaded = await uploadDriveBackupFile(
+            token,
+            exportToJson(store),
+            null,
+            GOOGLE_DRIVE_BACKUP_FILENAME,
+            this.fetchFn
+          );
+          await mutateStore((current) =>
+            updateSyncInStore(current, {
+              enabled: true,
+              remoteFileId: uploaded.id,
+              remoteModifiedTime: uploaded.modifiedTime,
+              lastSyncedAt: now,
+              lastSyncedHash: localDigest,
+            })
+          );
+          await saveSyncRuntimeState({
+            status: 'idle',
+            pendingLocalChanges: false,
+            lastCheckedAt: now,
+            lastError: null,
+            conflict: null,
+          });
+          return { outcome: 'uploaded', syncedAt: now };
+        }
+
+        // Case 2: Remote file exists — check whether remote changed since last sync.
+        const remoteUnchanged =
+          Boolean(store.sync.lastSyncedAt) &&
+          Boolean(store.sync.remoteModifiedTime) &&
+          Boolean(remoteMeta.modifiedTime) &&
+          remoteMeta.modifiedTime === store.sync.remoteModifiedTime;
+
+        if (remoteUnchanged) {
+          if (!isLocalDirty) {
+            await saveSyncRuntimeState({
+              status: 'idle',
+              pendingLocalChanges: false,
+              lastCheckedAt: now,
+              lastError: null,
+            });
+            return { outcome: 'up-to-date', syncedAt: store.sync.lastSyncedAt };
+          }
+
+          const uploaded = await uploadDriveBackupFile(
+            token,
+            exportToJson(store),
+            remoteMeta.id,
+            GOOGLE_DRIVE_BACKUP_FILENAME,
+            this.fetchFn
+          );
+          await mutateStore((current) =>
+            updateSyncInStore(current, {
+              enabled: true,
+              remoteFileId: uploaded.id,
+              remoteModifiedTime: uploaded.modifiedTime,
+              lastSyncedAt: now,
+              lastSyncedHash: localDigest,
+            })
+          );
+          await saveSyncRuntimeState({
+            status: 'idle',
+            pendingLocalChanges: false,
+            lastCheckedAt: now,
+            lastError: null,
+            conflict: null,
+          });
+          return { outcome: 'uploaded', syncedAt: now };
+        }
+
+        // Case 3: Remote changed or modifiedTime unknown — download and inspect.
+        const rawJson = await downloadDriveBackupFile(token, remoteMeta.id, this.fetchFn);
+        const remoteBackup = parseJsonBackup(rawJson);
+        const remoteDigest = computeContentDigest(remoteBackup);
+
+        if (remoteDigest === localDigest) {
+          await mutateStore((current) =>
+            updateSyncInStore(current, {
+              enabled: true,
+              remoteFileId: remoteMeta.id,
+              remoteModifiedTime: remoteMeta.modifiedTime,
+              lastSyncedAt: now,
+              lastSyncedHash: localDigest,
+            })
+          );
+          await saveSyncRuntimeState({
+            status: 'idle',
+            pendingLocalChanges: false,
+            lastCheckedAt: now,
+            lastError: null,
+            conflict: null,
+          });
+          return { outcome: 'up-to-date', syncedAt: now };
+        }
+
+        const reconciled = reconcileStores(store, remoteBackup, store.sync.lastSyncedAt, now);
+
+        // If local has no unsynced edits, seamlessly pull remote state.
+        if (!isLocalDirty) {
+          if (store.groups.length > 0) {
+            await createSnapshot(store, 'pre-auto-sync', '自动同步拉取远端前备份', now);
+          }
+          const pulledStore = {
+            ...reconciled.mergedStore,
+            groups: remoteBackup.groups,
+            deletedGroups: remoteBackup.deletedGroups,
+            settings: remoteBackup.settings,
+          };
+          const pulledDigest = computeContentDigest(pulledStore);
+          await mutateStore((current) =>
+            updateSyncInStore(
+              {
+                ...current,
+                updatedAt: now,
+                groups: pulledStore.groups,
+                deletedGroups: pulledStore.deletedGroups,
+                settings: pulledStore.settings,
+              },
+              {
+                enabled: true,
+                remoteFileId: remoteMeta.id,
+                remoteModifiedTime: remoteMeta.modifiedTime,
+                lastSyncedAt: now,
+                lastSyncedHash: pulledDigest,
+              },
+              now
+            )
+          );
+          await saveSyncRuntimeState({
+            status: 'idle',
+            pendingLocalChanges: false,
+            lastCheckedAt: now,
+            lastError: null,
+            conflict: null,
+          });
+          return { outcome: 'pulled', syncedAt: now };
+        }
+
+        // Disjoint concurrent changes: auto-merge cleanly without interrupting user.
+        if (reconciled.conflicts.length === 0) {
+          if (reconciled.hasChangesForLocal && store.groups.length > 0) {
+            await createSnapshot(store, 'pre-auto-sync', '自动合并多设备变更前备份', now);
+          }
+
+          let finalMeta = remoteMeta;
+          if (reconciled.hasChangesForRemote) {
+            finalMeta = await uploadDriveBackupFile(
+              token,
+              exportToJson(reconciled.mergedStore),
+              remoteMeta.id,
+              GOOGLE_DRIVE_BACKUP_FILENAME,
+              this.fetchFn
+            );
+          }
+
+          const mergedDigest = computeContentDigest(reconciled.mergedStore);
+          await mutateStore((current) =>
+            updateSyncInStore(
+              {
+                ...current,
+                updatedAt: now,
+                groups: reconciled.mergedStore.groups,
+                deletedGroups: reconciled.mergedStore.deletedGroups,
+                settings: reconciled.mergedStore.settings,
+              },
+              {
+                enabled: true,
+                remoteFileId: finalMeta.id,
+                remoteModifiedTime: finalMeta.modifiedTime,
+                lastSyncedAt: now,
+                lastSyncedHash: mergedDigest,
+              },
+              now
+            )
+          );
+          await saveSyncRuntimeState({
+            status: 'idle',
+            pendingLocalChanges: false,
+            lastCheckedAt: now,
+            lastError: null,
+            conflict: null,
+          });
+          return {
+            outcome: reconciled.hasChangesForLocal ? 'merged' : 'uploaded',
+            syncedAt: now,
+          };
+        }
+
+        // Overlapping conflict detected: preserve local snapshot & surface conflict resolution UI.
+        await createSnapshot(store, 'pre-conflict', '检测到同步冲突，自动保留本地快照', now);
+        await saveSyncRuntimeState({
+          status: 'conflict',
+          pendingLocalChanges: true,
+          lastCheckedAt: now,
+          lastError: null,
+          conflict: {
+            detectedAt: now,
+            fileId: remoteMeta.id,
+            remoteModifiedTime: remoteMeta.modifiedTime,
+            items: reconciled.conflicts,
+            remoteBackup,
+          },
+        });
+        return {
+          outcome: 'conflict',
+          syncedAt: store.sync.lastSyncedAt,
+          conflictCount: reconciled.conflicts.length,
+        };
+      });
+    } catch (error) {
+      if (error instanceof GoogleDriveError && error.code === 'AUTH_REQUIRED') {
+        if (options.silent) {
+          return { outcome: 'auth-expired', syncedAt: store.sync.lastSyncedAt };
+        }
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      await saveSyncRuntimeState({
+        status: 'error',
+        lastError: message,
+      });
+      if (options.silent) {
+        return { outcome: 'skipped', syncedAt: store.sync.lastSyncedAt, message };
+      }
+      throw error;
+    }
+  }
+
+  async resolveConflict(strategy: ConflictResolutionStrategy): Promise<AutoSyncResult> {
+    const runtime = await loadSyncRuntimeState();
+    const conflict = runtime.conflict;
+    if (!conflict) {
+      return this.syncAuto({ checkRemote: true });
+    }
+
+    const now = Date.now();
+    const store = await loadStore();
+
+    if (strategy === 'use-remote') {
+      if (store.groups.length > 0) {
+        await createSnapshot(store, 'pre-conflict', '选择云端版本覆盖本地前的安全快照', now);
+      }
+      const nextStore = await mutateStore((current) => {
+        const replaced = applyRemoteBackup(current, conflict.remoteBackup, 'replace', now);
+        return updateSyncInStore(
+          replaced,
+          {
+            enabled: true,
+            remoteFileId: conflict.fileId || current.sync.remoteFileId,
+            remoteModifiedTime: conflict.remoteModifiedTime,
+            lastSyncedAt: now,
+            lastSyncedHash: computeContentDigest(replaced),
+          },
+          now
+        );
+      });
+      void nextStore;
+      await saveSyncRuntimeState({
+        status: 'idle',
+        pendingLocalChanges: false,
+        lastCheckedAt: now,
+        lastError: null,
+        conflict: null,
+      });
+      return { outcome: 'pulled', syncedAt: now };
+    }
+
+    return this.handleUnauthorized(async (token) => {
+      if (strategy === 'keep-local') {
+        const uploaded = await uploadDriveBackupFile(
+          token,
+          exportToJson(store),
+          conflict.fileId || store.sync.remoteFileId,
+          GOOGLE_DRIVE_BACKUP_FILENAME,
+          this.fetchFn
+        );
+        const digest = computeContentDigest(store);
+        await mutateStore((current) =>
+          updateSyncInStore(current, {
+            enabled: true,
+            remoteFileId: uploaded.id,
+            remoteModifiedTime: uploaded.modifiedTime,
+            lastSyncedAt: now,
+            lastSyncedHash: digest,
+          })
+        );
+        await saveSyncRuntimeState({
+          status: 'idle',
+          pendingLocalChanges: false,
+          lastCheckedAt: now,
+          lastError: null,
+          conflict: null,
+        });
+        return { outcome: 'uploaded', syncedAt: now };
+      }
+
+      // strategy === 'merge'
+      if (store.groups.length > 0) {
+        await createSnapshot(store, 'pre-conflict', '冲突智能合并前本地安全快照', now);
+      }
+      const reconciled = reconcileStores(store, conflict.remoteBackup, store.sync.lastSyncedAt, now);
+      const uploaded = await uploadDriveBackupFile(
+        token,
+        exportToJson(reconciled.mergedStore),
+        conflict.fileId || store.sync.remoteFileId,
+        GOOGLE_DRIVE_BACKUP_FILENAME,
+        this.fetchFn
+      );
+      const mergedDigest = computeContentDigest(reconciled.mergedStore);
+      await mutateStore((current) =>
+        updateSyncInStore(
+          {
+            ...current,
+            updatedAt: now,
+            groups: reconciled.mergedStore.groups,
+            deletedGroups: reconciled.mergedStore.deletedGroups,
+            settings: reconciled.mergedStore.settings,
+          },
+          {
+            enabled: true,
+            remoteFileId: uploaded.id,
+            remoteModifiedTime: uploaded.modifiedTime,
+            lastSyncedAt: now,
+            lastSyncedHash: mergedDigest,
+          },
+          now
+        )
+      );
+      await saveSyncRuntimeState({
+        status: 'idle',
+        pendingLocalChanges: false,
+        lastCheckedAt: now,
+        lastError: null,
+        conflict: null,
+      });
+      return { outcome: 'merged', syncedAt: now };
     });
   }
 }

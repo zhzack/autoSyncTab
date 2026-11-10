@@ -1,51 +1,128 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Layers, Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Layers, Search } from 'lucide-react';
+import { createSnapshot } from '../shared/snapshots';
 import {
   createDefaultStore,
   loadStore,
   mergeImportedGroups,
+  moveTabInStore,
   mutateStore,
   removeGroupFromStore,
   removeTabFromGroup,
+  reorderGroupsInStore,
   subscribeStoreChanges,
   updateGroupInStore,
   updateSettingsInStore,
 } from '../shared/storage';
+import { cloudSyncAdapter } from '../shared/syncAdapter';
+import {
+  DEFAULT_SYNC_RUNTIME_STATE,
+  loadSyncRuntimeState,
+  subscribeSyncRuntimeChanges,
+} from '../shared/syncState';
 import { restoreSingleTab, restoreTabGroup } from '../shared/tabService';
-import type { AppStoreData, ExtensionSettings, TabGroup, TabItem } from '../shared/types';
+import { applyTheme, getNextTheme, subscribeSystemTheme } from '../shared/theme';
+import type { AppStoreData, ExtensionSettings, SyncRuntimeState, TabGroup, TabItem } from '../shared/types';
 import { GoogleDriveModal } from './components/GoogleDriveModal';
-import { GroupCard } from './components/GroupCard';
+import { GroupCard, type DragItemPayload } from './components/GroupCard';
 import { Header } from './components/Header';
 import { ImportExportModal } from './components/ImportExportModal';
 import { SettingsBar } from './components/SettingsBar';
 
 export function ManagerApp() {
   const [store, setStore] = useState<AppStoreData>(() => createDefaultStore());
+  const [syncRuntime, setSyncRuntime] = useState<SyncRuntimeState>(DEFAULT_SYNC_RUNTIME_STATE);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showImportExport, setShowImportExport] = useState(false);
   const [showDriveModal, setShowDriveModal] = useState(false);
+  const [activeDrag, setActiveDrag] = useState<DragItemPayload | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    void loadStore().then((initial) => {
+    void Promise.all([loadStore(), loadSyncRuntimeState()]).then(([initial, runtime]) => {
       if (!mounted) return;
       setStore(initial);
+      setSyncRuntime(runtime);
+      applyTheme(initial.settings.theme);
       setLoading(false);
+
+      if (initial.sync.enabled && initial.settings.autoSync) {
+        void cloudSyncAdapter.syncAuto({ checkRemote: true, silent: true }).then((result) => {
+          if (!mounted) return;
+          if (result.outcome === 'pulled' || result.outcome === 'merged') {
+            void loadStore().then((refreshed) => {
+              if (mounted) setStore(refreshed);
+            });
+          }
+        });
+      }
     });
 
-    const unsubscribe = subscribeStoreChanges((nextStore) => {
+    const unsubStore = subscribeStoreChanges((nextStore) => {
       if (mounted) {
         setStore(nextStore);
       }
     });
 
+    const unsubRuntime = subscribeSyncRuntimeChanges((nextRuntime) => {
+      if (mounted) {
+        setSyncRuntime(nextRuntime);
+      }
+    });
+
     return () => {
       mounted = false;
-      unsubscribe();
+      unsubStore();
+      unsubRuntime();
     };
   }, []);
+
+  useEffect(() => {
+    applyTheme(store.settings.theme);
+    if (store.settings.theme !== 'system') return;
+    return subscribeSystemTheme(() => {
+      applyTheme('system');
+    });
+  }, [store.settings.theme]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      if (e.key === '/' && !isEditable) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (showDriveModal) {
+          setShowDriveModal(false);
+        } else if (showImportExport) {
+          setShowImportExport(false);
+        } else if (searchQuery) {
+          setSearchQuery('');
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [searchQuery, showDriveModal, showImportExport]);
 
   const totalTabs = useMemo(
     () => store.groups.reduce((acc, group) => acc + group.tabs.length, 0),
@@ -112,12 +189,35 @@ export function ManagerApp() {
     setStore(updated);
   };
 
+  const handleReorderGroup = async (sourceGroupId: string, targetGroupId: string) => {
+    const updated = await mutateStore((current) =>
+      reorderGroupsInStore(current, sourceGroupId, targetGroupId)
+    );
+    setStore(updated);
+  };
+
+  const handleMoveTab = async (
+    sourceGroupId: string,
+    tabId: string,
+    targetGroupId: string,
+    targetTabId?: string,
+    position: 'before' | 'after' = 'before'
+  ) => {
+    const updated = await mutateStore((current) =>
+      moveTabInStore(current, sourceGroupId, tabId, targetGroupId, targetTabId, position)
+    );
+    setStore(updated);
+  };
+
   const handleUpdateSettings = async (patch: Partial<ExtensionSettings>) => {
     const updated = await mutateStore((current) => updateSettingsInStore(current, patch));
     setStore(updated);
   };
 
   const handleImportGroups = async (groups: TabGroup[], mode: 'prepend' | 'replace') => {
+    if (mode === 'replace' && store.groups.length > 0) {
+      await createSnapshot(store, 'pre-import', '覆盖导入前自动安全快照');
+    }
     const updated = await mutateStore((current) => mergeImportedGroups(current, groups, mode));
     setStore(updated);
   };
@@ -132,14 +232,53 @@ export function ManagerApp() {
         totalTabs={totalTabs}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        searchInputRef={searchInputRef}
         showSettings={showSettings}
         onToggleSettings={() => setShowSettings((v) => !v)}
         onOpenImportExport={() => setShowImportExport(true)}
         onOpenDriveModal={() => setShowDriveModal(true)}
+        theme={store.settings.theme}
+        onCycleTheme={() =>
+          void handleUpdateSettings({ theme: getNextTheme(store.settings.theme) })
+        }
         sync={store.sync}
+        syncRuntime={syncRuntime}
       />
 
       <main className="mgr-main">
+        {store.sync.enabled && syncRuntime.status === 'conflict' && syncRuntime.conflict && (
+          <div className="sync-alert-banner sync-alert-banner--conflict" role="alert">
+            <span>
+              <AlertTriangle size={16} />
+              检测到 {syncRuntime.conflict.items.length}{' '}
+              处多端同步冲突，已自动保存本地快照并暂停自动上传。
+            </span>
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={() => setShowDriveModal(true)}
+            >
+              立即处理冲突
+            </button>
+          </div>
+        )}
+
+        {store.sync.enabled && syncRuntime.status === 'auth-expired' && (
+          <div className="sync-alert-banner sync-alert-banner--warn" role="status">
+            <span>
+              <AlertTriangle size={16} />
+              Google Drive 授权已过期，自动同步已暂停。
+            </span>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => setShowDriveModal(true)}
+            >
+              重新授权登录
+            </button>
+          </div>
+        )}
+
         {showSettings && (
           <SettingsBar settings={store.settings} onUpdate={(p) => void handleUpdateSettings(p)} />
         )}
@@ -187,6 +326,14 @@ export function ManagerApp() {
               <GroupCard
                 key={group.id}
                 group={group}
+                allowDrag={!normalizedQuery}
+                activeDrag={activeDrag}
+                onDragStartItem={setActiveDrag}
+                onDragEndItem={() => setActiveDrag(null)}
+                onReorderGroup={(srcId, tgtId) => void handleReorderGroup(srcId, tgtId)}
+                onMoveTab={(srcGid, tid, tgtGid, tgtTid, pos) =>
+                  void handleMoveTab(srcGid, tid, tgtGid, tgtTid, pos)
+                }
                 onRestoreGroup={(grp) => void handleRestoreGroup(grp)}
                 onDeleteGroup={(id) => void handleDeleteGroup(id)}
                 onRenameGroup={(id, title) => void handleRenameGroup(id, title)}
@@ -209,10 +356,17 @@ export function ManagerApp() {
 
       {showDriveModal && (
         <GoogleDriveModal
+          autoSync={store.settings.autoSync}
+          syncRuntime={syncRuntime}
+          onToggleAutoSync={(enabled) => handleUpdateSettings({ autoSync: enabled })}
           onClose={() => setShowDriveModal(false)}
           onSyncUpdated={async () => {
-            const latest = await loadStore();
+            const [latest, latestRuntime] = await Promise.all([
+              loadStore(),
+              loadSyncRuntimeState(),
+            ]);
             setStore(latest);
+            setSyncRuntime(latestRuntime);
           }}
         />
       )}

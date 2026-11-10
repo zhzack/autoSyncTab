@@ -31,7 +31,7 @@ async function startFixtureServer(): Promise<{ server: Server; baseUrl: string }
   return { server, baseUrl: `http://127.0.0.1:${addr.port}` };
 }
 
-test('自动加载扩展并验证完整收纳、搜索、重命名、锁定与恢复流程', async () => {
+test('自动加载扩展并验证完整收纳、搜索、深色模式、快捷键、快照与恢复流程', async () => {
   const { server, baseUrl } = await startFixtureServer();
   const userDataDir = mkdtempSync(join(tmpdir(), 'autosynctab-e2e-'));
 
@@ -80,6 +80,15 @@ test('自动加载扩展并验证完整收纳、搜索、重命名、锁定与�
     await expect.poll(() => pageAlpha.isClosed()).toBe(true);
     await expect.poll(() => pageBeta.isClosed()).toBe(true);
 
+    // 验证 Manifest V3 全局快捷键已注册
+    const commandNames = await managerPage.evaluate(async () => {
+      const cmds = await chrome.commands.getAll();
+      return cmds.map((c) => c.name);
+    });
+    expect(commandNames).toEqual(
+      expect.arrayContaining(['_execute_action', 'stash-all-tabs', 'stash-current-tab', 'open-manager'])
+    );
+
     // 管理页应展示刚收纳的分组和标签，并禁用浏览器自动翻译提示
     await expect(managerPage.locator('html')).toHaveAttribute('translate', 'no');
     await expect(managerPage.locator('meta[name="google"]')).toHaveAttribute(
@@ -89,15 +98,28 @@ test('自动加载扩展并验证完整收纳、搜索、重命名、锁定与�
     await expect(managerPage.getByText('测试页面 Alpha')).toBeVisible();
     await expect(managerPage.getByText('测试页面 Beta')).toBeVisible();
 
-    // 实时搜索过滤
+    // 切换深色模式并验证刷新后持久化生效
+    await managerPage.getByRole('button', { name: /切换主题模式/ }).click(); // 跟随系统 -> 浅色
+    await managerPage.getByRole('button', { name: /切换主题模式/ }).click(); // 浅色 -> 深色
+    await expect(managerPage.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+    // 实时搜索过滤（含页内快捷键 '/' 聚焦）
+    await managerPage.keyboard.press('/');
     const searchInput = managerPage.getByLabel('搜索已收纳标签页');
+    await expect(searchInput).toBeFocused();
     await searchInput.fill('Alpha');
     await expect(managerPage.getByText('测试页面 Alpha')).toBeVisible();
     await expect(managerPage.getByText('测试页面 Beta')).toBeHidden();
     await managerPage.getByRole('button', { name: '清空搜索' }).click();
     await expect(managerPage.getByText('测试页面 Beta')).toBeVisible();
 
-    // 重命名分组并验证刷新页面后 chrome.storage.local 持久化有效
+    // 打开设置面板验证自动同步选项与快捷键提示
+    await managerPage.getByRole('button', { name: '设置' }).click();
+    await expect(managerPage.getByText('启用 Google Drive 自动同步')).toBeVisible();
+    await expect(managerPage.getByText('Alt+Shift+A')).toBeVisible();
+    await managerPage.getByRole('button', { name: '设置' }).click();
+
+    // 重命名分组并验证刷新页面后 chrome.storage.local 持久化（含深色模式）有效
     await managerPage.getByRole('button', { name: '重命名分组' }).click();
     const titleInput = managerPage.getByLabel('编辑分组名称');
     await titleInput.fill('E2E 自动化分组');
@@ -105,6 +127,7 @@ test('自动加载扩展并验证完整收纳、搜索、重命名、锁定与�
     await expect(managerPage.getByText('E2E 自动化分组')).toBeVisible();
     await managerPage.reload({ waitUntil: 'domcontentloaded' });
     await expect(managerPage.getByText('E2E 自动化分组')).toBeVisible();
+    await expect(managerPage.locator('html')).toHaveAttribute('data-theme', 'dark');
 
     // 锁定与解锁保护
     await managerPage.getByRole('button', { name: '锁定分组' }).click();
@@ -112,12 +135,19 @@ test('自动加载扩展并验证完整收纳、搜索、重命名、锁定与�
     await managerPage.getByRole('button', { name: '解锁分组' }).click();
     await expect(managerPage.getByRole('button', { name: '删除分组' })).toBeEnabled();
 
-    // 验证 Google Drive 弹窗开箱即用的一键登录按钮及高级配置持久化
+    // 验证 Google Drive 弹窗开箱即用的一键登录按钮、高级配置持久化及历史快照创建
     expect(
       await managerPage.evaluate(() => typeof chrome.identity?.launchWebAuthFlow === 'function')
     ).toBe(true);
     await managerPage.getByRole('button', { name: /Google Drive 云同步/ }).click();
     await expect(managerPage.getByRole('button', { name: /登录 Google 账号/ })).toBeEnabled();
+
+    // 历史快照标签页创建手动快照
+    await managerPage.getByRole('button', { name: /历史快照/ }).click();
+    await managerPage.getByRole('button', { name: '创建当前快照' }).click();
+    await expect(managerPage.getByText(/共 1 个分组 · 2 个标签页/)).toBeVisible();
+    await managerPage.getByRole('button', { name: '云端同步' }).click();
+
     await managerPage.getByRole('button', { name: /展开配置/ }).click();
     await expect(managerPage.getByLabel('固定重定向 URI（Redirect URI）')).toHaveValue(
       `https://${extensionId}.chromiumapp.org/`
