@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+coverage/
+.dev-chrome-profile/
+playwright-report/
+test-results/
+*.local
+.DS_Store
+Thumbs.db
