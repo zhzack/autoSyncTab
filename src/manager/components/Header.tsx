@@ -121,7 +121,7 @@ export function Header({
       <div className="mgr-header__inner">
         <div className="mgr-brand">
           <div className="mgr-logo" aria-hidden="true">
-            <Layers size={20} />
+            <img src="icons/icon128.png" alt="" className="mgr-logo__img" />
           </div>
           <div>
             <h1>autoSyncTab</h1>

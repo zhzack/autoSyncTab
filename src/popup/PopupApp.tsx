@@ -169,7 +169,7 @@ export function PopupApp() {
       <header className="popup-header">
         <div className="popup-brand">
           <div className="popup-logo" aria-hidden="true">
-            <Layers size={18} />
+            <img src="icons/icon128.png" alt="" className="popup-logo__img" />
           </div>
           <div>
             <h1>autoSyncTab</h1>
