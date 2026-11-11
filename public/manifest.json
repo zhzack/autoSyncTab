@@ -14,7 +14,8 @@
   ],
   "host_permissions": [
     "https://www.googleapis.com/*",
-    "https://oauth2.googleapis.com/*"
+    "https://oauth2.googleapis.com/*",
+    "https://*.workers.dev/*"
   ],
   "commands": {
     "_execute_action": {

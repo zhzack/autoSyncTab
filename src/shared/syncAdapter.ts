@@ -7,8 +7,11 @@ import {
 import { exportToJson, parseJsonBackup } from './formatters';
 import {
   buildGoogleAuthUrl,
+  buildGooglePkceAuthUrl,
   createOAuthState,
+  createPkcePair,
   downloadDriveBackupFile,
+  exchangeAuthCodeViaProxy,
   fetchGoogleUserEmail,
   findDriveBackupFile,
   getDriveFileMetadata,
@@ -16,7 +19,11 @@ import {
   GOOGLE_DRIVE_BACKUP_FILENAME,
   GOOGLE_DRIVE_BOOKMARKS_FILENAME,
   isValidGoogleClientId,
+  isValidOAuthProxyUrl,
+  normalizeOAuthProxyUrl,
+  parseAuthCodeRedirectUrl,
   parseAuthRedirectUrl,
+  refreshAccessTokenViaProxy,
   revokeGoogleToken,
   uploadDriveBackupFile,
   type DriveFileMeta,
@@ -55,7 +62,8 @@ export interface CloudSyncAdapter {
   getRedirectUri(): string;
   getStatus(): Promise<DriveStatusSnapshot>;
   saveClientId(clientId: string): Promise<DriveStatusSnapshot>;
-  connect(explicitClientId?: string): Promise<DriveStatusSnapshot>;
+  saveOAuthConfig(config: { clientId: string; oauthProxyUrl: string }): Promise<DriveStatusSnapshot>;
+  connect(explicitClientId?: string, explicitProxyUrl?: string): Promise<DriveStatusSnapshot>;
   disconnect(): Promise<DriveStatusSnapshot>;
   backup(): Promise<DriveBackupSummary>;
   restore(mode: SyncRestoreMode): Promise<DriveRestoreSummary>;
@@ -86,6 +94,7 @@ function formatWebAuthError(rawMessage?: string): string {
 export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
   private readonly customFetch?: FetchLike;
   private syncInFlight: Promise<AutoSyncResult> | null = null;
+  private refreshInFlight: Promise<string> | null = null;
 
   constructor(fetchFn?: FetchLike) {
     this.customFetch = fetchFn;
@@ -108,29 +117,56 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
 
   async getStatus(): Promise<DriveStatusSnapshot> {
     const [store, auth] = await Promise.all([loadStore(), loadAuthState()]);
+    const hasRefreshToken = Boolean(auth.refreshToken && auth.oauthProxyUrl);
     return {
       sync: store.sync,
-      hasValidToken: hasUsableToken(auth.accessToken, auth.tokenExpiresAt),
+      hasValidToken: hasUsableToken(auth.accessToken, auth.tokenExpiresAt) || hasRefreshToken,
+      hasRefreshToken,
       clientId: auth.clientId,
+      oauthProxyUrl: auth.oauthProxyUrl,
       redirectUri: this.getRedirectUri(),
     };
   }
 
   async saveClientId(clientId: string): Promise<DriveStatusSnapshot> {
-    const trimmed = clientId.trim();
-    if (!isValidGoogleClientId(trimmed)) {
+    const auth = await loadAuthState();
+    return this.saveOAuthConfig({ clientId, oauthProxyUrl: auth.oauthProxyUrl });
+  }
+
+  async saveOAuthConfig(config: {
+    clientId: string;
+    oauthProxyUrl: string;
+  }): Promise<DriveStatusSnapshot> {
+    const trimmedClientId = config.clientId.trim();
+    if (!isValidGoogleClientId(trimmedClientId)) {
       throw new GoogleDriveError(
         '请输入有效的 Google OAuth Client ID（通常以 .apps.googleusercontent.com 结尾）。',
         'INVALID_CLIENT_ID'
       );
     }
-    await saveAuthState({ clientId: trimmed });
+
+    const normalizedProxy = normalizeOAuthProxyUrl(config.oauthProxyUrl);
+    if (!isValidOAuthProxyUrl(normalizedProxy)) {
+      throw new GoogleDriveError(
+        '请输入有效的 OAuth 代理地址（需以 https:// 开头，或留空以使用隐式登录）。',
+        'INVALID_CLIENT_ID'
+      );
+    }
+
+    await saveAuthState({
+      clientId: trimmedClientId,
+      oauthProxyUrl: normalizedProxy,
+    });
     return this.getStatus();
   }
 
-  async connect(explicitClientId?: string): Promise<DriveStatusSnapshot> {
+  async connect(
+    explicitClientId?: string,
+    explicitProxyUrl?: string
+  ): Promise<DriveStatusSnapshot> {
     const auth = await loadAuthState();
     const clientId = (explicitClientId ?? auth.clientId).trim();
+    const oauthProxyUrl = normalizeOAuthProxyUrl(explicitProxyUrl ?? auth.oauthProxyUrl);
 
     if (!isValidGoogleClientId(clientId)) {
       throw new GoogleDriveError(
@@ -139,11 +175,22 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       );
     }
 
-    await saveAuthState({ clientId });
+    if (!isValidOAuthProxyUrl(oauthProxyUrl)) {
+      throw new GoogleDriveError(
+        '请输入有效的 OAuth 代理地址（需以 https:// 开头，或留空以使用隐式登录）。',
+        'INVALID_CLIENT_ID'
+      );
+    }
+
+    await saveAuthState({ clientId, oauthProxyUrl });
 
     const redirectUri = this.getRedirectUri();
     const state = createOAuthState();
-    const authUrl = buildGoogleAuthUrl(clientId, redirectUri, state);
+    const usePkce = Boolean(oauthProxyUrl);
+    const pkce = usePkce ? await createPkcePair() : null;
+    const authUrl = pkce
+      ? buildGooglePkceAuthUrl(clientId, redirectUri, state, pkce.codeChallenge)
+      : buildGoogleAuthUrl(clientId, redirectUri, state);
 
     if (typeof chrome === 'undefined' || !chrome.identity?.launchWebAuthFlow) {
       throw new GoogleDriveError(
@@ -171,13 +218,34 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       });
     });
 
-    const { accessToken, expiresInSeconds } = parseAuthRedirectUrl(redirectResultUrl, state);
+    let accessToken: string;
+    let refreshToken: string | null = null;
+    let expiresInSeconds: number;
+
+    if (pkce) {
+      const code = parseAuthCodeRedirectUrl(redirectResultUrl, state);
+      const tokenBundle = await exchangeAuthCodeViaProxy(
+        oauthProxyUrl,
+        { code, codeVerifier: pkce.codeVerifier, redirectUri },
+        this.fetchFn
+      );
+      accessToken = tokenBundle.accessToken;
+      refreshToken = tokenBundle.refreshToken;
+      expiresInSeconds = tokenBundle.expiresInSeconds;
+    } else {
+      const implicit = parseAuthRedirectUrl(redirectResultUrl, state);
+      accessToken = implicit.accessToken;
+      expiresInSeconds = implicit.expiresInSeconds;
+    }
+
     const tokenExpiresAt = Date.now() + expiresInSeconds * 1000;
     const email = await fetchGoogleUserEmail(accessToken, this.fetchFn);
 
     await saveAuthState({
       clientId,
+      oauthProxyUrl,
       accessToken,
+      refreshToken,
       tokenExpiresAt,
       accountEmail: email,
     });
@@ -199,8 +267,9 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
 
   async disconnect(): Promise<DriveStatusSnapshot> {
     const auth = await loadAuthState();
-    if (auth.accessToken) {
-      await revokeGoogleToken(auth.accessToken, this.fetchFn);
+    const tokenToRevoke = auth.refreshToken ?? auth.accessToken;
+    if (tokenToRevoke) {
+      await revokeGoogleToken(tokenToRevoke, this.fetchFn);
     }
 
     await clearAuthSession();
@@ -218,13 +287,65 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
     return this.getStatus();
   }
 
+  private async refreshStoredAccessToken(): Promise<string> {
+    if (this.refreshInFlight) {
+      return this.refreshInFlight;
+    }
+
+    const runner = (async () => {
+      const auth = await loadAuthState();
+      if (!auth.refreshToken || !auth.oauthProxyUrl) {
+        await clearAuthSession();
+        throw new GoogleDriveError('Google 授权已过期或尚未连接，请先授权登录。', 'AUTH_REQUIRED');
+      }
+
+      try {
+        const refreshed = await refreshAccessTokenViaProxy(
+          auth.oauthProxyUrl,
+          auth.refreshToken,
+          this.fetchFn
+        );
+        const tokenExpiresAt = Date.now() + refreshed.expiresInSeconds * 1000;
+        await saveAuthState({
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? auth.refreshToken,
+          tokenExpiresAt,
+        });
+
+        const runtime = await loadSyncRuntimeState();
+        if (runtime.status === 'auth-expired') {
+          await saveSyncRuntimeState({ status: 'idle', lastError: null });
+        }
+
+        return refreshed.accessToken;
+      } catch (error) {
+        if (error instanceof GoogleDriveError && error.code === 'AUTH_REQUIRED') {
+          await clearAuthSession();
+          await saveSyncRuntimeState({
+            status: 'auth-expired',
+            lastError: error.message,
+          });
+        }
+        throw error;
+      }
+    })().finally(() => {
+      this.refreshInFlight = null;
+    });
+
+    this.refreshInFlight = runner;
+    return runner;
+  }
+
   private async requireAccessToken(): Promise<string> {
     const auth = await loadAuthState();
-    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
-      await clearAuthSession();
-      throw new GoogleDriveError('Google 授权已过期或尚未连接，请先授权登录。', 'AUTH_REQUIRED');
+    if (hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
+      return auth.accessToken!;
     }
-    return auth.accessToken!;
+    if (auth.refreshToken && auth.oauthProxyUrl) {
+      return this.refreshStoredAccessToken();
+    }
+    await clearAuthSession();
+    throw new GoogleDriveError('Google 授权已过期或尚未连接，请先授权登录。', 'AUTH_REQUIRED');
   }
 
   private async handleUnauthorized<T>(fn: (token: string) => Promise<T>): Promise<T> {
@@ -233,6 +354,23 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       return await fn(token);
     } catch (error) {
       if (error instanceof GoogleDriveError && error.code === 'AUTH_REQUIRED') {
+        const auth = await loadAuthState();
+        if (auth.refreshToken && auth.oauthProxyUrl) {
+          try {
+            const freshToken = await this.refreshStoredAccessToken();
+            return await fn(freshToken);
+          } catch (retryError) {
+            if (retryError instanceof GoogleDriveError && retryError.code === 'AUTH_REQUIRED') {
+              await clearAuthSession();
+              await saveSyncRuntimeState({
+                status: 'auth-expired',
+                lastError: retryError.message,
+              });
+            }
+            throw retryError;
+          }
+        }
+
         await clearAuthSession();
         await saveSyncRuntimeState({
           status: 'auth-expired',
@@ -438,7 +576,8 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
     }
 
     const auth = await loadAuthState();
-    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
+    const canRefresh = Boolean(auth.refreshToken && auth.oauthProxyUrl);
+    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt) && !canRefresh) {
       await clearAuthSession();
       await saveSyncRuntimeState({
         status: 'auth-expired',
@@ -917,7 +1056,8 @@ export class GoogleDriveSyncAdapter implements CloudSyncAdapter {
       return { outcome: 'skipped', syncedAt: bookmarkStore.lastSyncedAt };
     }
 
-    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt)) {
+    const canRefresh = Boolean(auth.refreshToken && auth.oauthProxyUrl);
+    if (!hasUsableToken(auth.accessToken, auth.tokenExpiresAt) && !canRefresh) {
       return { outcome: 'auth-expired', syncedAt: bookmarkStore.lastSyncedAt };
     }
 

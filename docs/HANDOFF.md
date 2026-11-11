@@ -27,11 +27,12 @@
   - 弹窗菜单模式（`popup.html`）+ 后台 Service Worker（`src/background/index.ts`）统一执行收纳与右键菜单动作。
   - `manager.html`（`ManagerApp`）支持分组重命名、锁定/解锁、实时搜索、恢复单个/整组、复制链接、设置面板、OneTab 文本及完整 JSON 导入导出。
 
-### 阶段二：Google 账号授权与 Google Drive 云端备份/恢复（已完成）
-- 默认 Web 应用 Client ID 内置在 `src/shared/storage.ts`（`DEFAULT_GOOGLE_CLIENT_ID`），支持 `VITE_GOOGLE_CLIENT_ID` 环境变量或界面「高级设置」覆盖。
-- `GoogleDriveModal` 直接调用 `src/shared/syncAdapter.ts` 中的 `cloudSyncAdapter`，使用 `chrome.identity.launchWebAuthFlow`（`response_type=token`、`prompt=select_account`、随机 `state` 校验）。
+### 阶段二：Google 账号授权与 Google Drive 云端备份/恢复（已完成，已升级为长期免掉线 PKCE）
+- 默认 Web 应用 Client ID（`DEFAULT_GOOGLE_CLIENT_ID`）与无状态 OAuth 代理地址（`DEFAULT_OAUTH_PROXY_URL`: `https://autosynctab-oauth.zz1018784543.workers.dev`）内置在 `src/shared/storage.ts`，支持 `VITE_GOOGLE_CLIENT_ID` / `VITE_OAUTH_PROXY_URL` 环境变量或界面「高级设置」覆盖（清空代理地址可退回短效隐式流）。
+- `GoogleDriveModal` 直接调用 `src/shared/syncAdapter.ts` 中的 `cloudSyncAdapter`，使用 `chrome.identity.launchWebAuthFlow` + PKCE（`response_type=code`、`access_type=offline`、`prompt=select_account consent`、S256 `code_challenge`、随机 `state` 校验），通过 [workers/oauth-proxy/worker.js](../workers/oauth-proxy/worker.js) 兑换长期 `refresh_token`，在关闭浏览器重开或遇到 `401` 时自动静默续期。
+- Google Auth Platform 已切为 `In production` 并通过品牌验证（120×120 品牌 Logo：`docs/assets/autosynctab-brand-logo-120x120.png`；所有配置问题与解法详见 [docs/OAUTH_PERSISTENCE_TROUBLESHOOTING.md](./OAUTH_PERSISTENCE_TROUBLESHOOTING.md)）。
 - 仅申请 `drive.appdata` 与 `userinfo.email` 最小权限，备份存放在各用户云盘隐藏目录 `appDataFolder`。
-- 存储键分离：`autosynctab_store_v1`（业务数据）、`autosynctab_auth_v1`（OAuth 令牌）、`autosynctab_snapshots_v1`（本地历史快照）、`autosynctab_sync_runtime_v1`（实时同步状态与冲突载荷）。
+- 存储键分离：`autosynctab_store_v1`（业务数据）、`autosynctab_auth_v1`（OAuth 访问令牌、刷新令牌与代理配置）、`autosynctab_bookmarks_v1`（同步书签树）、`autosynctab_snapshots_v1`（本地历史快照）、`autosynctab_sync_runtime_v1`（实时同步状态与冲突载荷）。
 
 ### 阶段三：自动同步、冲突处理与体验增强（已完成）
 - **自动同步**：`src/background/index.ts` 监听 `chrome.storage.onChanged`，通过 `computeContentDigest` 判定真实内容变更（排除 `sync` 元数据自身写入），使用 `chrome.alarms` 30 秒防抖触发 `syncAuto()`；并在 `onStartup` 及打开管理页时轻量校验远端 `modifiedTime`。
@@ -70,7 +71,7 @@
   - `src/test/`（`storage.test.ts`、`tabService.test.ts`、`formatters.test.ts`、`bookmarks.test.ts`、`googleDrive.test.ts`、`syncMerge.test.ts`、`popup.test.tsx`、`manager.test.tsx`）
   - `e2e/extension.spec.ts`
   - `scripts/generate-icons.mjs`、`scripts/package-extension.mjs`、`scripts/launch-dev-browser.mjs`
-- **上架与规划文档**：`docs/ROADMAP.md`、`docs/HANDOFF.md`、`docs/CHROME_WEB_STORE.md`
+- **品牌与上架文档**：`workers/oauth-proxy/worker.js`、`workers/oauth-proxy/README.md`、`docs/assets/autosynctab-brand-logo-120x120.png`、`docs/ROADMAP.md`、`docs/HANDOFF.md`、`docs/CHROME_WEB_STORE.md`、`docs/OAUTH_PERSISTENCE_TROUBLESHOOTING.md`
 
 ---
 

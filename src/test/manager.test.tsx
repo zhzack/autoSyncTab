@@ -80,12 +80,22 @@ describe('ManagerApp', () => {
     chromeMockControls.launchAuthHandler = (authUrl) => {
       const state = new URL(authUrl).searchParams.get('state');
       return {
-        redirectUrl: `${redirectUri}#access_token=ya29_ui_test&expires_in=3600&state=${state}`,
+        redirectUrl: `${redirectUri}?code=ui_pkce_code&state=${state}`,
       };
     };
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/exchange')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'ya29_ui_test',
+            refresh_token: '1//ui_refresh_tok',
+            expires_in: 3600,
+          }),
+          { status: 200 }
+        );
+      }
       if (url === 'https://www.googleapis.com/oauth2/v3/userinfo') {
         return new Response(JSON.stringify({ email: 'tester@gmail.com' }), { status: 200 });
       }

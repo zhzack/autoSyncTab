@@ -2,17 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { exportToJson } from '../shared/formatters';
 import {
   buildGoogleAuthUrl,
+  buildGooglePkceAuthUrl,
   buildMultipartRelatedBody,
+  createPkcePair,
   GoogleDriveError,
   isValidGoogleClientId,
+  parseAuthCodeRedirectUrl,
   parseAuthRedirectUrl,
 } from '../shared/googleDriveClient';
 import {
   createDefaultStore,
+  DEFAULT_OAUTH_PROXY_URL,
   loadAuthState,
   loadStore,
   mergeRemoteGroups,
   prependGroup,
+  saveAuthState,
   saveStore,
 } from '../shared/storage';
 import { GoogleDriveSyncAdapter } from '../shared/syncAdapter';
@@ -120,7 +125,7 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
     expect(merged[2].locked).toBe(true);
   });
 
-  it('connects, backs up to appDataFolder, updates existing file, restores, and disconnects', async () => {
+  it('connects via PKCE + refresh token, backs up, auto-refreshes expired token, restores, and disconnects', async () => {
     // Seed local store with 1 group
     const base = createDefaultStore(1000);
     const { nextStore } = prependGroup(
@@ -131,11 +136,33 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
     );
     await saveStore(nextStore);
 
+    const pkce = await createPkcePair();
+    const pkceAuthUrl = new URL(
+      buildGooglePkceAuthUrl(TEST_CLIENT_ID, REDIRECT_URI, 'state_pkce', pkce.codeChallenge)
+    );
+    expect(pkceAuthUrl.searchParams.get('response_type')).toBe('code');
+    expect(pkceAuthUrl.searchParams.get('access_type')).toBe('offline');
+    expect(pkceAuthUrl.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(parseAuthCodeRedirectUrl(`${REDIRECT_URI}?code=abc&state=state_pkce`, 'state_pkce')).toBe('abc');
+
     let remoteFileContent = '';
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
       const method = init?.method ?? 'GET';
 
+      if (url === `${DEFAULT_OAUTH_PROXY_URL}/exchange`) {
+        return jsonResponse({
+          access_token: 'ya29_mock_token',
+          refresh_token: '1//refresh_mock_token',
+          expires_in: 3600,
+        });
+      }
+      if (url === `${DEFAULT_OAUTH_PROXY_URL}/refresh`) {
+        return jsonResponse({
+          access_token: 'ya29_refreshed_token',
+          expires_in: 3600,
+        });
+      }
       if (url === 'https://www.googleapis.com/oauth2/v3/userinfo') {
         return jsonResponse({ email: 'dev@gmail.com' });
       }
@@ -167,22 +194,25 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
     chromeMockControls.launchAuthHandler = (authUrl) => {
       const state = new URL(authUrl).searchParams.get('state');
       return {
-        redirectUrl: `${REDIRECT_URI}#access_token=ya29_mock_token&expires_in=3600&state=${state}`,
+        redirectUrl: `${REDIRECT_URI}?code=pkce_code_1&state=${state}`,
       };
     };
 
     const adapter = new GoogleDriveSyncAdapter(fetchMock as typeof fetch);
 
-    // 1. Connect
+    // 1. Connect (PKCE + exchange)
     const status = await adapter.connect(TEST_CLIENT_ID);
     expect(status.hasValidToken).toBe(true);
+    expect(status.hasRefreshToken).toBe(true);
     expect(status.sync.enabled).toBe(true);
     expect(status.sync.accountEmail).toBe('dev@gmail.com');
 
-    // Verify accessToken stays out of exported JSON backup
+    // Verify accessToken & refreshToken stay out of exported JSON backup
     const currentStore = await loadStore();
     expect(exportToJson(currentStore)).not.toContain('ya29_mock_token');
+    expect(exportToJson(currentStore)).not.toContain('1//refresh_mock_token');
     expect((await loadAuthState()).accessToken).toBe('ya29_mock_token');
+    expect((await loadAuthState()).refreshToken).toBe('1//refresh_mock_token');
 
     // 2. First backup (creates multipart file)
     const backup1 = await adapter.backup();
@@ -190,9 +220,12 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
     expect(backup1.groupCount).toBe(1);
     expect(remoteFileContent).toContain('https://github.com');
 
-    // 3. Second backup (updates existing fileId via PATCH)
+    // 3. Simulate browser restart / expired accessToken -> silent refresh kicks in automatically
+    await saveAuthState({ tokenExpiresAt: Date.now() - 10_000 });
+    expect((await adapter.getStatus()).hasValidToken).toBe(true);
     const backup2 = await adapter.backup();
     expect(backup2.fileId).toBe('file_001');
+    expect((await loadAuthState()).accessToken).toBe('ya29_refreshed_token');
 
     // 4. Simulate remote having an extra group and restore in merge mode
     const parsedRemote = JSON.parse(remoteFileContent) as typeof currentStore;
@@ -210,18 +243,15 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
     expect(restored.restoredGroupCount).toBe(2);
     expect(restored.totalGroupCount).toBe(2);
 
-    // 5. Disconnect clears token while keeping local groups
+    // 5. Disconnect clears tokens while keeping local groups
     const afterDisconnect = await adapter.disconnect();
     expect(afterDisconnect.hasValidToken).toBe(false);
+    expect(afterDisconnect.hasRefreshToken).toBe(false);
     expect(afterDisconnect.sync.enabled).toBe(false);
     expect((await loadStore()).groups).toHaveLength(2);
   });
 
-  it('clears expired token and surfaces AUTH_REQUIRED on 401 from Drive', async () => {
-    const adapter = new GoogleDriveSyncAdapter(
-      vi.fn(async () => jsonResponse({ error: { message: 'Invalid Credentials' } }, 401)) as typeof fetch
-    );
-
+  it('clears expired token and surfaces AUTH_REQUIRED on 401 in implicit fallback mode', async () => {
     chromeMockControls.launchAuthHandler = (authUrl) => {
       const state = new URL(authUrl).searchParams.get('state');
       return {
@@ -229,17 +259,43 @@ describe('googleDriveClient & GoogleDriveSyncAdapter', () => {
       };
     };
 
-    // Mock userinfo failing with 401 right away OR connect succeeding then backup returning 401
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ email: 'dev@gmail.com' }))
       .mockResolvedValueOnce(jsonResponse({ error: { message: 'Invalid Credentials' } }, 401));
 
     const adapter2 = new GoogleDriveSyncAdapter(fetchMock as typeof fetch);
-    await adapter2.connect(TEST_CLIENT_ID);
+    await adapter2.connect(TEST_CLIENT_ID, '');
     await expect(adapter2.backup()).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
     expect((await loadAuthState()).accessToken).toBeNull();
-    void adapter;
+  });
+
+  it('clears refresh session when proxy returns invalid_grant', async () => {
+    chromeMockControls.launchAuthHandler = (authUrl) => {
+      const state = new URL(authUrl).searchParams.get('state');
+      return {
+        redirectUrl: `${REDIRECT_URI}?code=code_x&state=${state}`,
+      };
+    };
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: 'ya29_init',
+          refresh_token: '1//revoked_rt',
+          expires_in: 3600,
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse({ email: 'dev@gmail.com' }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'invalid_grant' }, 400));
+
+    const adapter = new GoogleDriveSyncAdapter(fetchMock as typeof fetch);
+    await adapter.connect(TEST_CLIENT_ID);
+    await saveAuthState({ tokenExpiresAt: Date.now() - 10_000 });
+
+    await expect(adapter.backup()).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    expect((await loadAuthState()).refreshToken).toBeNull();
   });
 
   it('translates concurrent web auth flow error into clear Chinese guidance', async () => {

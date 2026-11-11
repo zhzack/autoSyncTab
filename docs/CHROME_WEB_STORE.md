@@ -27,11 +27,12 @@ npm run package:cws
    ```text
    https://<cws-extension-id>.chromiumapp.org/
    ```
-3. 如果更换了生产环境 Client ID，可通过环境变量重新构建发布包：
+3. 如果更换了生产环境 Client ID 或自定义 OAuth 代理地址，可通过环境变量重新构建发布包：
    ```bash
-   VITE_GOOGLE_CLIENT_ID="你的正式ClientID.apps.googleusercontent.com" npm run package:cws
+   VITE_GOOGLE_CLIENT_ID="你的正式ClientID.apps.googleusercontent.com" VITE_OAUTH_PROXY_URL="https://你的worker域名" npm run package:cws
    ```
-4. 前往 **Google Auth Platform → Audience**，确认 OAuth 同意屏幕已提交审核（使用敏感/受限权限 `drive.appdata` 需按 Google 指南通过应用验证，或先向测试用户开放）。
+4. 前往 Cloudflare Worker 的 **Variables and Secrets**，将 `ALLOWED_ORIGIN` 和 `ALLOWED_REDIRECT_URI` 更新为同时放行本地开发 ID 与商店新 ID（支持英文逗号分隔，例如 `chrome-extension://jlckgkpfpnegkcfmoioonmkjjgoggpmb,chrome-extension://<cws-extension-id>`）。
+5. 前往 **Google Auth Platform → Audience**，确认 OAuth 同意屏幕已切换为 `In production` 并提交敏感权限 `drive.appdata` 审核（仅内部测试可先向测试用户开放）。
 
 ---
 
@@ -50,7 +51,7 @@ npm run package:cws
 | `identity` | 通过 `chrome.identity.launchWebAuthFlow` 让用户自主登录 Google 账号并获取最小权限访问令牌用于 Google Drive 备份。 |
 | `alarms` | 在启用 Google Drive 自动同步后，于本地数据变更约 30 秒后防抖触发后台增量同步，避免频繁请求。 |
 | `bookmarks` | 自动读取本机浏览器书签树同步至插件「书签列表」视图，并支持在插件管理页内增删改、整理书签与同步至用户的 Google Drive 私人应用空间。 |
-| Host Permissions (`googleapis.com`, `oauth2.googleapis.com`) | 仅用于读取登录邮箱、上传/下载位于用户个人 Google Drive `appDataFolder` 隐藏目录中的备份文件，以及在断开连接时撤销访问令牌。 |
+| Host Permissions (`googleapis.com`, `oauth2.googleapis.com`, `*.workers.dev`) | 分别用于读写用户个人 Google Drive `appDataFolder` 备份与用户信息、在断开时撤销令牌，以及通过无状态 Cloudflare Worker 代理完成 PKCE 授权码兑换与长期 `refresh_token` 刷新。 |
 
 ---
 
@@ -58,7 +59,8 @@ npm run package:cws
 
 - **数据采集与存储**：autoSyncTab 不设自有后端服务器，不会向任何第三方发送、出售或统计用户的浏览历史与标签页记录。所有数据默认仅保存在本地 `chrome.storage.local` 中。
 - **可选云同步**：仅当用户主动点击「登录 Google 账号」并授权后，扩展才会将标签页分组 JSON 备份文件写入用户自己 Google Drive 的隐藏应用私有空间（`https://www.googleapis.com/auth/drive.appdata`），扩展无法访问云盘中的其他文件。
-- **凭证隔离**：OAuth 访问令牌仅存于本地扩展存储键 `autosynctab_auth_v1`，绝不会包含在导出的 JSON 文件或上传的云端备份中；用户点击「断开」后会尝试调用 Google `revoke` 接口并立即清除本地令牌。
+- **凭证隔离**：OAuth 访问令牌与刷新令牌仅存于本地扩展存储键 `autosynctab_auth_v1`，绝不会包含在导出的 JSON 文件或上传的云端备份中；无状态 OAuth 代理仅转发换票请求，不保存任何用户数据；用户点击「断开」后会调用 Google `revoke` 接口并立即清除本地令牌。
+- **在线隐私权政策页**：https://autosynctab-oauth.zz1018784543.workers.dev/privacy （由 [workers/oauth-proxy/worker.js](../workers/oauth-proxy/worker.js) 托管提供）。
 
 ---
 
@@ -67,4 +69,4 @@ npm run package:cws
 - [ ] 运行 `npm run check`（`tsc` + `eslint` + `vitest` + `vite build`）全部通过。
 - [ ] 运行 `npm run test:e2e` 真实 Chromium 端到端测试通过。
 - [ ] 运行 `npm run package:cws` 检查生成的 `release/autosynctab-v*-cws.zip` 内 `manifest.json` 已不包含 `"key"`。
-- [ ] 准备 1280×800 或 640×400 商店宣传截图（浅色模式管理页、深色模式管理页、Google Drive 同步与历史快照弹窗、Popup 菜单）。
+- [ ] 准备 1280×800 或 640×400 商店宣传截图（浅色模式管理页、深色模式管理页、Google Drive 同步与历史快照弹窗、Popup 菜单），120×120 品牌 Logo 可参考 [docs/assets/autosynctab-brand-logo-120x120.png](./assets/autosynctab-brand-logo-120x120.png)。

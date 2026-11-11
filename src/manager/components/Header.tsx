@@ -189,6 +189,7 @@ export function Header({
           <button
             type="button"
             className={`btn ${hasCloudWarning ? 'btn--cloud-warn' : 'btn--cloud'}`}
+            title={hasCloudWarning && syncRuntime.lastError ? syncRuntime.lastError : undefined}
             onClick={onOpenDriveModal}
           >
             {renderDriveButtonContent()}

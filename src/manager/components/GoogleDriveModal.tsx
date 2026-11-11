@@ -25,7 +25,7 @@ import {
   loadSnapshots,
   restoreSnapshot,
 } from '../../shared/snapshots';
-import { DEFAULT_GOOGLE_CLIENT_ID, loadStore } from '../../shared/storage';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_OAUTH_PROXY_URL, loadStore } from '../../shared/storage';
 import { cloudSyncAdapter } from '../../shared/syncAdapter';
 import type {
   ConflictResolutionStrategy,
@@ -88,6 +88,7 @@ export function GoogleDriveModal({
   const [status, setStatus] = useState<DriveStatusSnapshot | null>(null);
   const [snapshots, setSnapshots] = useState<StoreSnapshot[]>([]);
   const [clientIdInput, setClientIdInput] = useState(DEFAULT_GOOGLE_CLIENT_ID);
+  const [proxyUrlInput, setProxyUrlInput] = useState(DEFAULT_OAUTH_PROXY_URL);
   const [restoreMode, setRestoreMode] = useState<SyncRestoreMode>('merge');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [copiedUri, setCopiedUri] = useState(false);
@@ -103,6 +104,7 @@ export function GoogleDriveModal({
       setStatus(nextStatus);
       setSnapshots(nextSnapshots);
       setClientIdInput(nextStatus.clientId || DEFAULT_GOOGLE_CLIENT_ID);
+      setProxyUrlInput(nextStatus.oauthProxyUrl ?? DEFAULT_OAUTH_PROXY_URL);
     } catch (error) {
       setFeedback({ type: 'error', text: getErrorMessage(error) });
     }
@@ -127,10 +129,14 @@ export function GoogleDriveModal({
     setBusyAction('save-client');
     setFeedback(null);
     try {
-      const nextStatus = await cloudSyncAdapter.saveClientId(clientIdInput);
+      const nextStatus = await cloudSyncAdapter.saveOAuthConfig({
+        clientId: clientIdInput,
+        oauthProxyUrl: proxyUrlInput,
+      });
       setStatus(nextStatus);
       setClientIdInput(nextStatus.clientId);
-      setFeedback({ type: 'ok', text: 'OAuth Client ID 已保存，现在可以直接点击登录。' });
+      setProxyUrlInput(nextStatus.oauthProxyUrl);
+      setFeedback({ type: 'ok', text: 'OAuth Client ID 已保存（含代理配置），现在可以直接点击登录。' });
     } catch (error) {
       setFeedback({ type: 'error', text: getErrorMessage(error) });
     } finally {
@@ -143,7 +149,8 @@ export function GoogleDriveModal({
     setFeedback(null);
     try {
       const nextStatus = await cloudSyncAdapter.connect(
-        clientIdInput.trim() || DEFAULT_GOOGLE_CLIENT_ID
+        clientIdInput.trim() || DEFAULT_GOOGLE_CLIENT_ID,
+        proxyUrlInput.trim()
       );
       setStatus(nextStatus);
       await onSyncUpdated();
@@ -378,6 +385,7 @@ export function GoogleDriveModal({
                         : '尚未连接 Google Drive'}
                   </div>
                   <div className="drive-status-sub">
+                    {isConnected && status?.hasRefreshToken ? '已开启长期授权（自动无感续期） · ' : ''}
                     {status?.sync.lastSyncedAt
                       ? `最近同步：${formatDateTime(status.sync.lastSyncedAt)}${
                           syncRuntime.pendingLocalChanges ? ' · 有本地变更待同步' : ''
@@ -606,6 +614,20 @@ export function GoogleDriveModal({
                         <span>{copiedUri ? '已复制' : '复制'}</span>
                       </button>
                     </div>
+                  </div>
+
+                  <div className="drive-field">
+                    <label className="drive-field-label" htmlFor="drive-oauth-proxy">
+                      OAuth 令牌刷新代理（Cloudflare Worker，留空则退回短效隐式登录）
+                    </label>
+                    <input
+                      id="drive-oauth-proxy"
+                      type="text"
+                      className="drive-input drive-input--mono"
+                      placeholder="https://autosynctab-oauth.xxx.workers.dev"
+                      value={proxyUrlInput}
+                      onChange={(e) => setProxyUrlInput(e.target.value)}
+                    />
                   </div>
 
                   <div className="drive-field">

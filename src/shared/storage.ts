@@ -609,15 +609,23 @@ export function applyRemoteBackup(
 export const DEFAULT_GOOGLE_CLIENT_ID =
   '813169183999-7h25nq6u6rcf0lhf69gmknd65ogji42p.apps.googleusercontent.com';
 
+export const DEFAULT_OAUTH_PROXY_URL = 'https://autosynctab-oauth.zz1018784543.workers.dev';
+
 export function getDefaultAuthState(): SyncAuthState {
   const envClientId =
     typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID
       ? String(import.meta.env.VITE_GOOGLE_CLIENT_ID).trim()
       : '';
+  const envProxyUrl =
+    typeof import.meta !== 'undefined' && typeof import.meta.env?.VITE_OAUTH_PROXY_URL === 'string'
+      ? String(import.meta.env.VITE_OAUTH_PROXY_URL).trim()
+      : DEFAULT_OAUTH_PROXY_URL;
 
   return {
     clientId: envClientId || DEFAULT_GOOGLE_CLIENT_ID,
+    oauthProxyUrl: envProxyUrl.replace(/\/+$/, ''),
     accessToken: null,
+    refreshToken: null,
     tokenExpiresAt: null,
     accountEmail: null,
   };
@@ -638,7 +646,12 @@ export async function loadAuthState(): Promise<SyncAuthState> {
       typeof candidate.clientId === 'string' && candidate.clientId.trim()
         ? candidate.clientId.trim()
         : defaults.clientId,
+    oauthProxyUrl:
+      typeof candidate.oauthProxyUrl === 'string'
+        ? candidate.oauthProxyUrl.trim().replace(/\/+$/, '')
+        : defaults.oauthProxyUrl,
     accessToken: typeof candidate.accessToken === 'string' ? candidate.accessToken : null,
+    refreshToken: typeof candidate.refreshToken === 'string' ? candidate.refreshToken : null,
     tokenExpiresAt:
       typeof candidate.tokenExpiresAt === 'number' && Number.isFinite(candidate.tokenExpiresAt)
         ? candidate.tokenExpiresAt
@@ -660,6 +673,7 @@ export async function saveAuthState(patch: Partial<SyncAuthState>): Promise<Sync
 export async function clearAuthSession(): Promise<SyncAuthState> {
   return saveAuthState({
     accessToken: null,
+    refreshToken: null,
     tokenExpiresAt: null,
     accountEmail: null,
   });

@@ -27,10 +27,49 @@ export function isValidGoogleClientId(clientId: string): boolean {
   return trimmed.length > 20 && trimmed.endsWith('.apps.googleusercontent.com');
 }
 
+export function normalizeOAuthProxyUrl(rawUrl: string): string {
+  return rawUrl.trim().replace(/\/+$/, '');
+}
+
+export function isValidOAuthProxyUrl(rawUrl: string): boolean {
+  const normalized = normalizeOAuthProxyUrl(rawUrl);
+  if (!normalized) return true;
+  try {
+    const parsed = new URL(normalized);
+    return (
+      parsed.protocol === 'https:' ||
+      (parsed.protocol === 'http:' &&
+        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createOAuthState(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export async function createPkcePair(): Promise<{
+  codeVerifier: string;
+  codeChallenge: string;
+}> {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const codeVerifier = toBase64Url(bytes);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+  const codeChallenge = toBase64Url(new Uint8Array(digest));
+  return { codeVerifier, codeChallenge };
 }
 
 export function buildGoogleAuthUrl(
@@ -45,6 +84,26 @@ export function buildGoogleAuthUrl(
   authUrl.searchParams.set('scope', GOOGLE_OAUTH_SCOPES.join(' '));
   authUrl.searchParams.set('prompt', 'select_account');
   authUrl.searchParams.set('include_granted_scopes', 'true');
+  authUrl.searchParams.set('state', state);
+  return authUrl.toString();
+}
+
+export function buildGooglePkceAuthUrl(
+  clientId: string,
+  redirectUri: string,
+  state: string,
+  codeChallenge: string
+): string {
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', clientId.trim());
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('scope', GOOGLE_OAUTH_SCOPES.join(' '));
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'select_account consent');
+  authUrl.searchParams.set('include_granted_scopes', 'true');
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
   authUrl.searchParams.set('state', state);
   return authUrl.toString();
 }
@@ -80,6 +139,113 @@ export function parseAuthRedirectUrl(
   const expiresInSeconds = Number.isFinite(rawExpires) && rawExpires > 0 ? rawExpires : 3600;
 
   return { accessToken, expiresInSeconds };
+}
+
+export function parseAuthCodeRedirectUrl(redirectUrl: string, expectedState: string): string {
+  const parsed = new URL(redirectUrl);
+  const queryParams = parsed.searchParams;
+  const hashParams = new URLSearchParams(parsed.hash.startsWith('#') ? parsed.hash.slice(1) : '');
+
+  const error = queryParams.get('error') ?? hashParams.get('error');
+  if (error) {
+    if (error === 'access_denied') {
+      throw new GoogleDriveError('你已取消 Google 账号授权。', 'AUTH_REQUIRED');
+    }
+    const desc = queryParams.get('error_description') ?? hashParams.get('error_description');
+    throw new GoogleDriveError(desc || `Google 授权失败：${error}`, 'AUTH_REQUIRED');
+  }
+
+  const returnedState = queryParams.get('state') ?? hashParams.get('state');
+  if (!returnedState || returnedState !== expectedState) {
+    throw new GoogleDriveError('OAuth 安全校验（state）不匹配，请重新授权。', 'AUTH_REQUIRED');
+  }
+
+  const code = queryParams.get('code') ?? hashParams.get('code');
+  if (!code) {
+    throw new GoogleDriveError('未能从 Google 授权回调中获取授权码。', 'AUTH_REQUIRED');
+  }
+
+  return code;
+}
+
+export interface OAuthTokenBundle {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresInSeconds: number;
+}
+
+async function postOAuthProxy(
+  endpointUrl: string,
+  payload: Record<string, string>,
+  fetchFn: FetchLike
+): Promise<OAuthTokenBundle> {
+  const response = await fetchFn(endpointUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = (await response.json().catch(() => ({}))) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!response.ok || !data.access_token) {
+    const errorCode = data.error ?? '';
+    const detail = data.error_description || data.error || `HTTP ${response.status}`;
+    if (errorCode === 'invalid_grant' || errorCode === 'unauthorized_client' || response.status === 401) {
+      throw new GoogleDriveError(
+        'Google 长期授权已失效或已被撤销，请重新登录 Google 账号。',
+        'AUTH_REQUIRED',
+        response.status
+      );
+    }
+    throw new GoogleDriveError(`OAuth 令牌服务请求失败：${detail}`, 'DRIVE_ERROR', response.status);
+  }
+
+  const expiresInSeconds =
+    typeof data.expires_in === 'number' && Number.isFinite(data.expires_in) && data.expires_in > 0
+      ? data.expires_in
+      : 3600;
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : null,
+    expiresInSeconds,
+  };
+}
+
+export async function exchangeAuthCodeViaProxy(
+  proxyUrl: string,
+  payload: { code: string; codeVerifier: string; redirectUri: string },
+  fetchFn: FetchLike = fetch
+): Promise<OAuthTokenBundle> {
+  const baseUrl = normalizeOAuthProxyUrl(proxyUrl);
+  return postOAuthProxy(
+    `${baseUrl}/exchange`,
+    {
+      code: payload.code,
+      code_verifier: payload.codeVerifier,
+      redirect_uri: payload.redirectUri,
+    },
+    fetchFn
+  );
+}
+
+export async function refreshAccessTokenViaProxy(
+  proxyUrl: string,
+  refreshToken: string,
+  fetchFn: FetchLike = fetch
+): Promise<OAuthTokenBundle> {
+  const baseUrl = normalizeOAuthProxyUrl(proxyUrl);
+  return postOAuthProxy(
+    `${baseUrl}/refresh`,
+    { refresh_token: refreshToken },
+    fetchFn
+  );
 }
 
 export function buildMultipartRelatedBody(

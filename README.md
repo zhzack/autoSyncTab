@@ -21,10 +21,14 @@ autoSyncTab/
 │   ├── manager/               # 独立标签页管理页面（拖拽排序、深色模式、冲突/快照弹窗）
 │   ├── shared/                # 数据模型、存储、三方合并、快照、主题、Drive 客户端与同步适配器
 │   └── test/                  # Vitest 单元测试与组件测试
+├── workers/
+│   └── oauth-proxy/           # 无状态 Cloudflare Worker（PKCE 换票、续期及隐私政策页）
 ├── docs/
-│   ├── ROADMAP.md             # 三阶段开发路线图
-│   ├── HANDOFF.md             # 项目交接与架构说明
-│   └── CHROME_WEB_STORE.md    # Chrome Web Store 上架准备指南
+│   ├── ROADMAP.md                           # 三阶段开发路线图
+│   ├── HANDOFF.md                           # 项目交接与架构说明
+│   ├── CHROME_WEB_STORE.md                  # Chrome Web Store 上架准备指南
+│   ├── OAUTH_PERSISTENCE_TROUBLESHOOTING.md # Google 长期授权配置与排错记录
+│   └── assets/                              # 120x120 Google 品牌验证 Logo
 ├── popup.html                 # Popup 页面入口
 ├── manager.html               # Manager 页面入口
 └── vite.config.ts             # Vite 多入口构建配置
@@ -86,8 +90,8 @@ npm run package:cws   # 生成 release/autosynctab-v0.3.0-cws.zip（自动剥离
   - 锁定的分组在恢复、拖拽或误点删除时受到保护。
 - **管理页能力**：分组重命名、锁定/解锁、关键词实时搜索、一键恢复整组/单个标签、复制链接、设置面板、兼容 OneTab 文本及完整 JSON 的导入导出。
 
-### 阶段二：Google Drive 云端备份与恢复
-- **Google OAuth 2.0 授权（支持多账号选择）**：支持在扩展内直接配置 OAuth Client ID（或通过环境变量 `VITE_GOOGLE_CLIENT_ID` 预置），使用 `launchWebAuthFlow` 授权并自由切换任意 Google 账号。
+### 阶段二：Google Drive 云端备份与恢复（支持长期免掉线授权）
+- **Google OAuth 2.0 长期授权（PKCE + Refresh Token）**：支持在扩展内配置 OAuth Client ID 与无状态代理地址（或通过 `VITE_GOOGLE_CLIENT_ID` / `VITE_OAUTH_PROXY_URL` 预置），使用 `launchWebAuthFlow` + PKCE 配合 [workers/oauth-proxy/worker.js](workers/oauth-proxy/worker.js) 兑换 `refresh_token`，关闭浏览器重开也能自动无感续期（支持自由切换任意 Google 账号；详见 [docs/OAUTH_PERSISTENCE_TROUBLESHOOTING.md](docs/OAUTH_PERSISTENCE_TROUBLESHOOTING.md)）。
 - **隐私安全的云端存储**：备份文件 `autosynctab-backup.json` 存放在 Google Drive 隐藏应用目录 `appDataFolder`，不污染云盘根目录；访问令牌与备份内容分离存储。
 - **备份与恢复模式**：支持「立即备份到云端」、「智能合并到本地」与「覆盖本地记录」。
 

@@ -37,14 +37,14 @@
 ### 1. 固定扩展 ID 与权限配置
 - 在 `public/manifest.json` 中固定 RSA 公钥 `"key"`，确保任意测试环境（如 `.dev-chrome-profile`、E2E、Chrome）均获得稳定一致的扩展 ID：`jlckgkpfpnegkcfmoioonmkjjgoggpmb`。
   *(注：提交 Chrome Web Store 审核上架时请使用 `npm run package:cws`，脚本会自动从压缩包内的 `manifest.json` 剥离 `"key"` 字段。)*
-- 申请 `"identity"` 权限及 `https://www.googleapis.com/*`、`https://oauth2.googleapis.com/*` 主机权限。
+- 申请 `"identity"` 权限及 `https://www.googleapis.com/*`、`https://oauth2.googleapis.com/*`、`https://*.workers.dev/*` 主机权限。
 
-### 2. 多账户友好的 OAuth 2.0 授权方案
-- 使用 `chrome.identity.launchWebAuthFlow` + `prompt=select_account` + 随机 `state` 防 CSRF 校验：
-  - 不仅支持 Google Chrome，也兼容 `npm run dev:browser` 启动的独立测试 Chromium 环境。
-  - 支持在授权弹窗中自由选择/切换任意 Google 账号，不受浏览器当前 Profile 登录账号限制。
-- 客户端 ID 支持在扩展弹窗内直接填写保存（也支持通过构建环境变量 `VITE_GOOGLE_CLIENT_ID` 预置）。
-- 访问令牌保存在独立本地键 `autosynctab_auth_v1`，不会随标签页 JSON 备份上传或导出。
+### 2. 多账户友好的长期 OAuth 2.0 授权方案（PKCE + Refresh Token）
+- 使用 `chrome.identity.launchWebAuthFlow` + PKCE（`response_type=code`、`access_type=offline`、`prompt=select_account consent`、`S256`）+ 无状态 Cloudflare Worker 代理（`workers/oauth-proxy/worker.js`）：
+  - 不仅支持 Google Chrome，也兼容 `npm run dev:browser`、Edge 等环境，并支持自由切换任意 Google 账号。
+  - 兑换并持久化存储长期 `refresh_token`，关闭浏览器重开或遇 401 时后台自动无感续期（若高级设置清空代理地址则自动退回原有隐式流）。
+- 客户端 ID 与代理地址支持在扩展弹窗内直接填写保存（也支持环境变量 `VITE_GOOGLE_CLIENT_ID` / `VITE_OAUTH_PROXY_URL` 预置）。
+- 访问令牌与刷新令牌保存在独立本地键 `autosynctab_auth_v1`，不会随标签页 JSON 备份上传或导出；排错与配置记录见 [docs/OAUTH_PERSISTENCE_TROUBLESHOOTING.md](./OAUTH_PERSISTENCE_TROUBLESHOOTING.md)。
 
 ### 3. Google Drive API v3 集成
 - 实现 `src/shared/googleDriveClient.ts` 与 `src/shared/syncAdapter.ts` 中的 `GoogleDriveSyncAdapter`：

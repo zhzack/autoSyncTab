@@ -78,7 +78,9 @@ export interface SyncMetadata {
 
 export interface SyncAuthState {
   clientId: string;
+  oauthProxyUrl: string;
   accessToken: string | null;
+  refreshToken: string | null;
   tokenExpiresAt: number | null;
   accountEmail: string | null;
 }
@@ -86,7 +88,9 @@ export interface SyncAuthState {
 export interface DriveStatusSnapshot {
   sync: SyncMetadata;
   hasValidToken: boolean;
+  hasRefreshToken: boolean;
   clientId: string;
+  oauthProxyUrl: string;
   redirectUri: string;
 }
 
