@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "autoSyncTab",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "轻量优雅的标签页收纳管理插件，支持分组整理、搜索恢复与 Google Drive 云端自动同步",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArsouj0Nc9m7kdp9b+4kWb1qoHS10v5FzhB6mDh+ObqX8/h/M+Brf157Hj3rgCQthpM6GsP0y+KOKXbgqeqekahuwBdOe1TPBdI+43kwhNNcjkjYVi6Mr3uLJQlXBX9DSzV9/0SBgpSkGpjS4QniNmekvigL65dss0hIgy79jJ8SHyv8pp9y82vKsFIK9qBbCnqjDd16IsdDOTC901K928vuqA4q6kXQ+DSpjZNH+7/517wPzrchBKZtUe/99mXAct76W0N1qusX3jF5NSJq7taPXXayFt4cV0bxCO5/ptrYc0nwNhnr/bETCovIOXspVMRzOnQSjqVT0+eo2g+IPrQIDAQAB",
   "permissions": [

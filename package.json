@@ -1,7 +1,7 @@
 {
   "name": "autosynctab",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "autoSyncTab - OneTab-like Chrome extension with React, TypeScript, Vite, and Google Drive sync.",
   "type": "module",
   "scripts": {
