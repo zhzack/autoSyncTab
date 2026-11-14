@@ -1,5 +1,4 @@
-import { execSync } from 'node:fs';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync as runCommand } from 'node:child_process';
@@ -56,7 +55,7 @@ try {
   runCommand('npm run check', { cwd: ROOT, stdio: 'inherit' });
   runCommand('node scripts/package-extension.mjs --cws', { cwd: ROOT, stdio: 'inherit' });
 } catch (err) {
-  console.error(`\n❌ 构建失败，请检查报错！已回滚版本号至 v${oldVersion}`);
+  console.error(`\n❌ 构建失败，请检查报错！已回滚版本号至 v${oldVersion}`, err);
   pkg.version = oldVersion;
   manifest.version = oldVersion;
   writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
@@ -78,4 +77,6 @@ try {
   if (process.platform === 'win32') {
     runCommand(`explorer.exe /select,"${zipPath}"`);
   }
-} catch {}
+} catch (err) {
+  void err;
+}

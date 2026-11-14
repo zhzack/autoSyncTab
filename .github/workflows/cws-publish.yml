@@ -36,18 +36,49 @@ jobs:
       - name: Build Chrome Web Store package
         run: npm run package:cws
 
-      - name: Locate zip package
+      - name: Locate zip package and prepare Extension ID
         id: get-zip
         run: |
           ZIP_PATH=$(ls release/autosynctab-*-cws.zip | head -n 1)
+          if [ -z "$ZIP_PATH" ] || [ ! -f "$ZIP_PATH" ]; then
+            echo "Error: CWS zip package not found in release/"
+            exit 1
+          fi
           echo "Found package: $ZIP_PATH"
           echo "file=$ZIP_PATH" >> $GITHUB_OUTPUT
+
+          EXT_ID="${{ secrets.CHROME_EXTENSION_ID }}"
+          if [ -z "$EXT_ID" ]; then
+            EXT_ID="jdpiepnpdobipikhedfcegaehmfpgmjp"
+          fi
+          echo "app_id=$EXT_ID" >> $GITHUB_OUTPUT
+
+      - name: Validate GitHub Secrets
+        run: |
+          MISSING=0
+          if [ -z "${{ secrets.CHROME_CLIENT_ID }}" ]; then
+            echo "❌ 缺少 GitHub Secret: CHROME_CLIENT_ID"
+            MISSING=1
+          fi
+          if [ -z "${{ secrets.CHROME_CLIENT_SECRET }}" ]; then
+            echo "❌ 缺少 GitHub Secret: CHROME_CLIENT_SECRET"
+            MISSING=1
+          fi
+          if [ -z "${{ secrets.CHROME_REFRESH_TOKEN }}" ]; then
+            echo "❌ 缺少 GitHub Secret: CHROME_REFRESH_TOKEN"
+            MISSING=1
+          fi
+          if [ "$MISSING" -eq 1 ]; then
+            echo "请前往 GitHub 仓库 -> Settings -> Secrets and variables -> Actions 添加上述 3 个密钥！"
+            echo "参考指南: docs/CI_CD_PUBLISH_GUIDE.md"
+            exit 1
+          fi
 
       - name: Upload to Chrome Web Store
         uses: mnao305/chrome-extension-upload@v5.0.0
         with:
           file-name: ${{ steps.get-zip.outputs.file }}
-          app-id: ${{ secrets.CHROME_EXTENSION_ID || 'jdpiepnpdobipikhedfcegaehmfpgmjp' }}
+          app-id: ${{ steps.get-zip.outputs.app_id }}
           client-id: ${{ secrets.CHROME_CLIENT_ID }}
           client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}

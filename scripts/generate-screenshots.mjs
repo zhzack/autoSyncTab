@@ -478,7 +478,9 @@ async function run() {
     await context.close();
     try {
       rmSync(userDataDir, { recursive: true, force: true });
-    } catch {}
+    } catch (err) {
+      void err;
+    }
   }
 }
 
