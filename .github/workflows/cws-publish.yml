@@ -1,0 +1,54 @@
+name: Publish Chrome Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      auto_publish:
+        description: '是否直接提交审核（true=直接提审，false=仅上传为草稿）'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-and-publish:
+    name: Build and Upload to Chrome Web Store
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run code quality checks
+        run: npm run check
+
+      - name: Build Chrome Web Store package
+        run: npm run package:cws
+
+      - name: Locate zip package
+        id: get-zip
+        run: |
+          ZIP_PATH=$(ls release/autosynctab-*-cws.zip | head -n 1)
+          echo "Found package: $ZIP_PATH"
+          echo "file=$ZIP_PATH" >> $GITHUB_OUTPUT
+
+      - name: Upload to Chrome Web Store
+        uses: mnao305/chrome-extension-upload@v5.0.0
+        with:
+          file-name: ${{ steps.get-zip.outputs.file }}
+          app-id: ${{ secrets.CHROME_EXTENSION_ID || 'jdpiepnpdobipikhedfcegaehmfpgmjp' }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          publish: ${{ github.event.inputs.auto_publish == 'true' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
