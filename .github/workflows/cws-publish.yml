@@ -77,8 +77,8 @@ jobs:
       - name: Upload to Chrome Web Store
         uses: mnao305/chrome-extension-upload@v5.0.0
         with:
-          file-name: ${{ steps.get-zip.outputs.file }}
-          app-id: ${{ steps.get-zip.outputs.app_id }}
+          file-path: ${{ steps.get-zip.outputs.file }}
+          extension-id: ${{ steps.get-zip.outputs.app_id }}
           client-id: ${{ secrets.CHROME_CLIENT_ID }}
           client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
