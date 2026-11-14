@@ -1,38 +1,33 @@
-# Chrome Web Store 上架准备指南
+# Chrome Web Store 上架与发布全流程指南
 
-本文档用于指导将 **autoSyncTab** 提交至 Chrome Web Store（CWS）审核与发布。
-
----
-
-## 1. 上架打包命令（自动剥离 `"key"`）
-
-本地开发为了在 `.dev-chrome-profile`、E2E 与日常 Chrome 中保持固定扩展 ID（`jlckgkpfpnegkcfmoioonmkjjgoggpmb`），在 [public/manifest.json](../public/manifest.json) 中保留了 `"key"` 字段。  
-**提交 Chrome Web Store 时不能包含 `"key"` 字段**（商店会统一分配正式公钥与扩展 ID）。
-
-运行以下命令即可自动构建并在不改动源码的前提下生成已剥离 `"key"` 的商店专用压缩包：
-
-```bash
-npm run package:cws
-# 输出：release/autosynctab-v0.3.0-cws.zip
-```
+本文档用于指导 **autoSyncTab** 在 Chrome Web Store（CWS）的首次上架、凭据绑定与后续自动化持续发布。
 
 ---
 
-## 2. OAuth 重定向 URI 切换步骤
+## 1. 核心上架资产与标识
 
-首次上传至 Chrome Web Store 开发者控制台（无需立刻公开，可先保存草稿或发布为仅测试人员可见）后，商店会为扩展分配正式的 Extension ID（格式为 32 位小写字母，例如 `<cws-extension-id>`）：
+* **Chrome 开发者账号 ID (Publisher ID)**: `80a3a15e-2aba-478e-9402-0c4fe2e8d476`
+* **正式 Extension ID**: `jdpiepnpdobipikhedfcegaehmfpgmjp`
+* **CWS 后台草稿/版本编辑直达链接**:  
+  https://chrome.google.com/webstore/devconsole/80a3a15e-2aba-478e-9402-0c4fe2e8d476/jdpiepnpdobipikhedfcegaehmfpgmjp/edit
+* **程序包管理直达链接**:  
+  https://chrome.google.com/webstore/devconsole/80a3a15e-2aba-478e-9402-0c4fe2e8d476/jdpiepnpdobipikhedfcegaehmfpgmjp/edit/package
+* **在线隐私政策网址 (Privacy Policy)**:  
+  `https://autosynctab-oauth.zz1018784543.workers.dev/privacy`
 
-1. 打开 Google Cloud Console → **APIs & Services → Credentials**。
-2. 编辑当前 Web 应用凭据（或新建生产环境凭据），在 **Authorized redirect URIs** 中添加商店正式回调地址：
-   ```text
-   https://<cws-extension-id>.chromiumapp.org/
-   ```
-3. 如果更换了生产环境 Client ID 或自定义 OAuth 代理地址，可通过环境变量重新构建发布包：
-   ```bash
-   VITE_GOOGLE_CLIENT_ID="你的正式ClientID.apps.googleusercontent.com" VITE_OAUTH_PROXY_URL="https://你的worker域名" npm run package:cws
-   ```
-4. 前往 Cloudflare Worker 的 **Variables and Secrets**，将 `ALLOWED_ORIGIN` 和 `ALLOWED_REDIRECT_URI` 更新为同时放行本地开发 ID 与商店新 ID（支持英文逗号分隔，例如 `chrome-extension://jlckgkpfpnegkcfmoioonmkjjgoggpmb,chrome-extension://<cws-extension-id>`）。
-5. 前往 **Google Auth Platform → Audience**，确认 OAuth 同意屏幕已切换为 `In production` 并提交敏感权限 `drive.appdata` 审核（仅内部测试可先向测试用户开放）。
+---
+
+## 2. 外部授权白名单（已对接正式 ID）
+
+1. **Google Cloud Console OAuth 凭据**：
+   * 凭据 Client ID: `813169183999-7h25nq6u6rcf0lhf69gmknd65ogji42p.apps.googleusercontent.com`
+   * **已获授权的重定向 URI** 已加入：
+     ```text
+     https://jdpiepnpdobipikhedfcegaehmfpgmjp.chromiumapp.org/
+     ```
+2. **Cloudflare Worker 代理 (`workers/oauth-proxy`)**：
+   * `ALLOWED_ORIGIN`: `chrome-extension://jlckgkpfpnegkcfmoioonmkjjgoggpmb,chrome-extension://jdpiepnpdobipikhedfcegaehmfpgmjp`
+   * `ALLOWED_REDIRECT_URI`: `https://jlckgkpfpnegkcfmoioonmkjjgoggpmb.chromiumapp.org/,https://jdpiepnpdobipikhedfcegaehmfpgmjp.chromiumapp.org/`
 
 ---
 
@@ -55,18 +50,38 @@ npm run package:cws
 
 ---
 
-## 4. 隐私政策要点（Privacy Policy Template）
+## 4. 宣传素材与截图自动化
 
-- **数据采集与存储**：autoSyncTab 不设自有后端服务器，不会向任何第三方发送、出售或统计用户的浏览历史与标签页记录。所有数据默认仅保存在本地 `chrome.storage.local` 中。
-- **可选云同步**：仅当用户主动点击「登录 Google 账号」并授权后，扩展才会将标签页分组 JSON 备份文件写入用户自己 Google Drive 的隐藏应用私有空间（`https://www.googleapis.com/auth/drive.appdata`），扩展无法访问云盘中的其他文件。
-- **凭证隔离**：OAuth 访问令牌与刷新令牌仅存于本地扩展存储键 `autosynctab_auth_v1`，绝不会包含在导出的 JSON 文件或上传的云端备份中；无状态 OAuth 代理仅转发换票请求，不保存任何用户数据；用户点击「断开」后会调用 Google `revoke` 接口并立即清除本地令牌。
-- **在线隐私权政策页**：https://autosynctab-oauth.zz1018784543.workers.dev/privacy （由 [workers/oauth-proxy/worker.js](../workers/oauth-proxy/worker.js) 托管提供）。
+谷歌商店对截图有严格的像素限制与格式要求（**必须为 1280x800 或 640x400，严禁 32 位 Alpha 透明通道**）。
+项目中已内置 Playwright 自动化渲染截图脚本：
+
+```bash
+npm run screenshots
+```
+
+执行后会自动在 [docs/store-screenshots/](./store-screenshots/) 生成符合规范的高品质 JPEG 图像：
+1. `screenshot-1-manager-light.jpg` (1280×800) - 浅色模式管理页
+2. `screenshot-2-manager-dark.jpg` (1280×800) - 深色模式管理页
+3. `screenshot-3-settings-sync.jpg` (1280×800) - Google Drive 同步与偏好设置
+4. `screenshot-4-popup.jpg` (1280×800) - Popup 弹窗与核心功能宣传
+5. `promo-tile-small-440x280.jpg` (440×280) - 小型宣传图块
+6. `promo-tile-marquee-1400x560.jpg` (1400×560) - 顶部宣传图块
 
 ---
 
-## 5. 发布前自检清单
+## 5. 后续版本一键更新流程
 
-- [ ] 运行 `npm run check`（`tsc` + `eslint` + `vitest` + `vite build`）全部通过。
-- [ ] 运行 `npm run test:e2e` 真实 Chromium 端到端测试通过。
-- [ ] 运行 `npm run package:cws` 检查生成的 `release/autosynctab-v*-cws.zip` 内 `manifest.json` 已不包含 `"key"`。
-- [ ] 准备 1280×800 或 640×400 商店宣传截图（浅色模式管理页、深色模式管理页、Google Drive 同步与历史快照弹窗、Popup 菜单），120×120 品牌 Logo 可参考 [docs/assets/autosynctab-brand-logo-120x120.png](./assets/autosynctab-brand-logo-120x120.png)。
+后续维护和日常 Bug 修复时，无需手动改写版本号或反复打包，只需运行：
+
+```bash
+npm run release        # 自动 patch: 0.3.0 -> 0.3.1
+# 或
+npm run release:minor  # 自动 minor: 0.3.0 -> 0.4.0
+```
+
+脚本将自动执行以下操作：
+1. 同步更新 `package.json` 与 `public/manifest.json` 的版本号；
+2. 执行类型检查、代码规范校验与单元测试（`npm run check`）；
+3. 编译前端并剥离 `"key"` 生成正式 CWS 安装包（`release/autosynctab-v*-cws.zip`）；
+4. 在资源管理器中自动弹出并高亮选中生成的 zip 包；
+5. 在终端打印直达后台上传地址。只需拖入网页并点击「提交审核」即可。

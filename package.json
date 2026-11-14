@@ -14,8 +14,12 @@
     "test:e2e": "npm run build && playwright test",
     "dev:browser": "node scripts/launch-dev-browser.mjs",
     "icons": "node scripts/generate-icons.mjs",
+    "screenshots": "node scripts/generate-screenshots.mjs",
     "package": "npm run build && node scripts/package-extension.mjs",
     "package:cws": "npm run build && node scripts/package-extension.mjs --cws",
+    "release": "node scripts/release.mjs patch",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {

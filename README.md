@@ -59,9 +59,12 @@ npm run lint
 npm test
 npm run build
 
-# 6. 打包可分发压缩包
+# 6. 打包可分发压缩包与版本发布
 npm run package       # 生成 release/autosynctab-v0.3.0.zip（保留本地固定 key）
 npm run package:cws   # 生成 release/autosynctab-v0.3.0-cws.zip（自动剥离 key，供 Chrome Web Store 上传）
+npm run screenshots   # 自动化生成合规 1280x800 / 440x280 / 1400x560 商店宣传图（JPEG 无透明层）
+npm run release       # 一键版本自增（patch）、跑测试、打包 CWS 并唤起文件管理器与直达控制台链接
+npm run release:minor # 发布次版本（minor，例如 0.3.0 -> 0.4.0）
 ```
 
 ### 2. 免手动点击的正式测试方式（推荐）
